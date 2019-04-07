@@ -152,9 +152,15 @@ updateBlock(Block, OurCurrentChain, Friends) -> {IDnuovo_blocco, ID_bloccopreced
 											   end,
 										   %cerchiamo sempre di determinare la catena più lunga fra la nostra e quella degli amici
 										   %in modo da risolvere i casi di fork o qualora ci siamo appena connessi alla rete
-									       getLongestChain(Chain, Friends).
+										   ChainList = getChainsFromFriends(Chain, Friends, Block),
+									       getLongestChainFromList(ChainList, Chain).
 
-getLongestChain(Chain, Friends) -> Chain. %TODO: cambiare questa funzione quando sarà disponibile il codice per ricostruire la catena
+getChainsFromFriends(ChainTupla, Friends, Block) -> [newUpdateChain(F, make_ref(), Block, ChainTupla) || F <- Friends]. 
+
+getLongestChainFromList([], CurrChain) -> CurrChain; 
+getLongestChainFromList(ChainList, CurrChain) -> [H|Tail] = ChainList,
+													LongestChain = getLongestChain(H, CurrChain),
+													getLongestChainFromList(Tail, LongestChain).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 test_nodes() ->
