@@ -93,15 +93,15 @@ loop(MyFriends, State) ->
         {'DOWN', MonitorReference, process, _, Reason} ->   %monitoriamo tutti gli attori che spawniamo, se questi terminano normalmente non facciamo nulla,
                                                             %altrimenti li ri-lanciamo con le informazioni memorizzate nel dizionario di processo
                                                             case Reason of
-                                                                normal ->   loop(MyFriends, State);
+                                                                normal ->   nothingToDo;
                                                                 _ ->        ProcessData = get(MonitorReference),
                                                                             case ProcessData of
                                                                                 launchTimerToAskFriendToTeacher -> launchTimerToAskFriendToTeacher();
                                                                                 {watcher, PID} -> launchWatcher(PID)
-                                                                            end,
-                                                                            loop(MyFriends, State)
-                                                            end
-
+                                                                            end
+                                                            end,
+                                                            erase(MonitorReference),
+                                                            loop(MyFriends, State)
     end.
 
 
