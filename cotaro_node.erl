@@ -3,11 +3,16 @@
 
 %definisce il numero di amici che ogni nodo deve cercare di mantenere
 -define(NumberOfFriendsRequired, 3).
+
 %definisce la struttura dello stato di un nodo
 % - numberOfNotEnoughFriendRequest: il nodo si memorizza il numero di richieste di nuovi amici fatte che non gli hanno permesso di tornare al
 %                                   numero di amici richiesto. Quando questo valore raggiunge il numero di amici che abbiamo passiamo a chiedere
 %                                   al nodo professore perchè nessuno dei nostri amici è riuscito ad aiutarci.
--record(state, {numberOfNotEnoughFriendRequest}).
+% - chain: è una tupla composta da {chain, IdHead, Dictonary}. Il primo campo è un atomo, il secondo è l'ID del blocco che si trova in testa alla catena
+%         (ovvero l'ultimo che è stato inserito) ed infine l'ultimo campo è il dizionario che utilizziamo per memorizzare tutti i blocchi che compongono la nostra catena.
+%         Il dizionario usa come chiavi gli ID dei blocchi e come valori gli oggetti "blocco" corrispondenti.
+% - listOfTransaction: è la lista delle nuove transazioni che riceviamo e che possiamo inserire in un nuovo blocco dopo averlo minato
+-record(state, {numberOfNotEnoughFriendRequest, chain, listOfTransaction}).
 
 %utilizzata per lanciare un nuovo nodo
 launchNode() -> spawn(?MODULE, initializeNode, []).
@@ -16,7 +21,12 @@ launchNode() -> spawn(?MODULE, initializeNode, []).
 % - initializza lo stato del nuovo nodo
 % - richiede degli amici al nodo professore
 % - avvia il behaviour del nodo
-initializeNode() -> State = #state{numberOfNotEnoughFriendRequest = 0},
+initializeNode() -> State = #state{
+                                    numberOfNotEnoughFriendRequest = 0,
+                                    chain =  {chain, none, dict:new()},
+                                    listOfTransaction = []
+                                  },
+                    process_flag(trap_exit, true),
                     askFriendsToTeacher(),
                     loop([], State).
 
@@ -90,18 +100,45 @@ loop(MyFriends, State) ->
                                         Sender ! {friends, Nonce, MyFriends},
                                         loop(MyFriends, State);
 
-        {'DOWN', MonitorReference, process, _, Reason} ->   %monitoriamo tutti gli attori che spawniamo, se questi terminano normalmente non facciamo nulla,
-                                                            %altrimenti li ri-lanciamo con le informazioni memorizzate nel dizionario di processo
-                                                            case Reason of
-                                                                normal ->   nothingToDo;
-                                                                _ ->        ProcessData = get(MonitorReference),
-                                                                            case ProcessData of
-                                                                                launchTimerToAskFriendToTeacher -> launchTimerToAskFriendToTeacher();
-                                                                                {watcher, PID} -> launchWatcher(PID)
-                                                                            end
-                                                            end,
-                                                            erase(MonitorReference),
-                                                            loop(MyFriends, State)
+
+        {push, Transaction} ->  %Transaction = {IDtransazione, Payload}
+                                {IdTransaction, _} = Transaction,
+                                %controlliamo se la transazione in questione è già presente nella nostra catena
+                                TransactionFoundInTheChain = searchTransactionInTheChain(IdTransaction, State#state.chain),
+                                %controlliamo se la transazione in questione è già presente nella nostra lista delle nuove transazioni che abbiamo già ricevuto
+                                TransactionFoundInTheList = searchTransactionInTheList(IdTransaction, State#state.listOfTransaction),
+                                TransactionFound = TransactionFoundInTheChain or TransactionFoundInTheList,
+                                case TransactionFound of
+                                    true -> %se conoscevamo già la transazione, non facciamo nulla
+                                            nothingToDo,
+                                            loop(MyFriends, State);
+                                    false ->    %se non la conoscevamo, la inseriamo nella lista della transazione da provare ad inserire nei prossimi blocchi
+                                                %e poi la ritrasmettiamo ai nostri amici
+                                                io:format("~p receive a new transaction with ID ~w~n", [self(), IdTransaction]),
+                                                NewListOfTransaction = State#state.listOfTransaction ++ [Transaction],
+                                                NewState = State#state{listOfTransaction = NewListOfTransaction},
+                                                sendToAllFriend(MyFriends, {push, Transaction}),
+                                                loop(MyFriends, NewState)
+                                end;
+
+
+        {'EXIT', ActorDeadPID, Reason} ->   %abbiamo linkato tutti gli attori che abbiamo spawniamo, se questi terminano normalmente non facciamo nulla,
+                                            %altrimenti li ri-lanciamo con le informazioni memorizzate nel dizionario di processo
+                                            case Reason of
+                                                normal ->   nothingToDo;
+                                                _ ->        ProcessData = get(ActorDeadPID),
+                                                            case ProcessData of
+                                                                launchTimerToAskFriendToTeacher -> launchTimerToAskFriendToTeacher();
+                                                                {watcher, PID} -> launchWatcher(PID);
+                                                                _ ->    %se non so gestire la exit mi suicido
+                                                                        exit(Reason)
+                                                            end
+                                            end,
+                                            %dove aver fatto ripartire l'attore crashato eliminiamo la entry collegata al vecchio attore ormai morto dal dizionario di processo
+                                            erase(ActorDeadPID),
+                                            loop(MyFriends, State)
+
+
     end.
 
 
@@ -110,9 +147,10 @@ sleep(N) -> receive after N*1000 -> ok end.
 
 launchWatcher(PID) ->   Self = self(),
                         WatcherPID = spawn(fun () -> watch(Self,PID) end),
+                        link(WatcherPID),
                         %inseriamo le informazioni sull'attore watcher lanciato nel dizionario di processo così che
                         %se questo muore per qualche ragione, venga rilanciato
-                        put(monitor(process, WatcherPID), {watcher, PID}).
+                        put(WatcherPID, {watcher, PID}).
 watch(Main,Node) ->   sleep(10),
                       Ref = make_ref(),
                       Node ! {ping, self(), Ref},
@@ -123,13 +161,14 @@ watch(Main,Node) ->   sleep(10),
 
 
 launchTimerToAskFriendToTeacher() ->    Creator = self(),
-                                        TimerPID =  spawn(fun () -> io:format("~p launch timer to ask friends to teacher~n", [Creator]),
-                                                        sleep(10),
-                                                        Creator ! {timer_askFriendsToTeacher}
-                                                    end),
+                                        TimerPID =  spawn(fun () -> %io:format("~p launch timer to ask friends to teacher~n", [Creator]),
+                                                                    sleep(10),
+                                                                    Creator ! {timer_askFriendsToTeacher}
+                                                                end),
+                                        link(TimerPID),
                                         %inseriamo le informazioni sull'attore timer lanciato nel dizionario di processo così che
                                         %se questo muore per qualche ragione, venga rilanciato
-                                        put(monitor(process, TimerPID), launchTimerToAskFriendToTeacher).
+                                        put(TimerPID, launchTimerToAskFriendToTeacher).
 
 askFriendsToTeacher() -> askFriends([]).
 askFriends([]) ->   io:format("~p require friends to teacher node~n", [self()]),
@@ -143,12 +182,12 @@ askFriends(MyFriends) ->    %selezioniamo casualmente uno dei nostri amici e gli
 
 addFriends(MyFriends, []) ->    io:format("~p updated friend list = ~w ~n", [self(), MyFriends]),
                                 MyFriends;
-addFriends(MyFriends, OtherFriends) ->  %aggiungiamo amici finchè non raggiungiamo il numero necessario o finiscono i potenziali nuovi amicizi
+addFriends(MyFriends, OtherFriends) ->  %aggiungiamo amici finchè non raggiungiamo il numero necessario o finiscono i potenziali nuovi amici
                                         %la scelta di un nuovo amico, tra i potenziali a disposizione è casuale e su questo viene lanciato un watcher
                                         %per controllare che rimanga in vita
                                         case length(MyFriends) < ?NumberOfFriendsRequired of
                                             true -> NewFriend = lists:nth(rand:uniform(length(OtherFriends)), OtherFriends),
-                                                    io:format("~p add a new friend ~p~n",[self(), NewFriend]),
+                                                    %io:format("~p add a new friend ~p~n",[self(), NewFriend]),
                                                     launchWatcher(NewFriend),
                                                     addFriends( MyFriends ++ [NewFriend], OtherFriends -- [NewFriend]);
                                             false -> io:format("~p updated friend list = ~w ~n", [self(), MyFriends]),
@@ -156,11 +195,49 @@ addFriends(MyFriends, OtherFriends) ->  %aggiungiamo amici finchè non raggiungi
                                         end.
 
 
+sendToAllFriend([], _) -> nothingToDo;
+sendToAllFriend(FriendList, Message) -> lists:foreach(fun(FriendPID) -> FriendPID ! Message end, FriendList).
+
+
 % può essere usata per ottenere il blocco richiesto da messaggio 'get_previous'
 getBlockFromChain(CurrentChain, BlockID) ->
     {chain, _, CurrentDictChain} = CurrentChain,
     {ok, Block} = dict:find(BlockID, CurrentDictChain),
     Block.
+
+
+searchTransactionInTheChain(IdTransaction, Chain) ->    try
+                                                            {chain, IdHeadBlock, _} = Chain,
+                                                            searchTransactionInTheChainAux(IdTransaction, IdHeadBlock, Chain)
+                                                        catch
+                                                            found -> true
+                                                        end.
+%la searchTransactionInTheChainAux solleva un'eccezione 'found' nel momento in cui trova in un blocco della catena la transazione cercata
+searchTransactionInTheChainAux(_, none, _) -> false ;
+searchTransactionInTheChainAux(IdTransaction, IdBlock, Chain) ->    Block = getBlockFromChain(Chain,IdBlock),
+                                                                    {_, IDPreviousBlock, CurrentTransactionList, _} = Block,
+                                                                    %predicato che ritorna true se la transazione in input è quella cercata (stesso ID), false altrimenti
+                                                                    IsTheSearchedTransaction =  fun(Trans) ->   {CurrentTransID, _} = Trans,
+                                                                                                                case CurrentTransID of
+                                                                                                                    IdTransaction -> true;
+                                                                                                                    _ -> false
+                                                                                                                end
+                                                                                                end,
+                                                                    case lists:search(IsTheSearchedTransaction, CurrentTransactionList) of
+                                                                        {value, _} -> throw(found);
+                                                                        false -> searchTransactionInTheChainAux(IdTransaction, IDPreviousBlock, Chain)
+                                                                    end.
+searchTransactionInTheList(IdTransaction, NewTransactionList) ->    %predicato che ritorna true se la transazione in input è quella cercata (stesso ID), false altrimenti
+                                                                    IsTheSearchedTransaction =  fun(Trans) ->   {CurrentTransID, _} = Trans,
+                                                                                                                case CurrentTransID of
+                                                                                                                    IdTransaction -> true;
+                                                                                                                    _ -> false
+                                                                                                                end
+                                                                                                end,
+                                                                    case lists:search(IsTheSearchedTransaction, NewTransactionList) of
+                                                                        {value, _} -> true;
+                                                                        false -> false
+                                                                    end.
 
 
 % crea un dizionario sulla base di quello originale considerando solo la "catena"
@@ -274,7 +351,7 @@ updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends) -
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 test_nodes() ->
-	T = spawn(teacher_node, main, []),
+    T = spawn(teacher_node, main, []),
 	sleep(1),
 	M1 = launchNode(),
 	M2 = launchNode(),
@@ -284,6 +361,11 @@ test_nodes() ->
     M5 = launchNode(),
     sleep(3),
     exit(M2, manually_kill),
+    M1 ! {push, {1, transazione1}},
+    M3 ! {push, {2, transazione2}},
+    M4 ! {push, {4, transazione4}},
+    M5 ! {push, {5, transazione5}},
+    M4 ! {push, {4, transazione4}},
 	%sleep(15),
 	%Ref = make_ref(),
 	%M1 ! {get_friends, self(), Ref},
