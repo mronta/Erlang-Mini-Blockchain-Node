@@ -230,7 +230,7 @@ getLongestChain(Chain1, Chain2) ->
 updateBlock(Block, OurCurrentChain, Friends) ->
     {IDnuovo_blocco, ID_bloccoprecedente, Lista_transazioni, Soluzione} = Block,
 	{chain, Head, CurrChain} = OurCurrentChain,
-	Chain = case proof_of_work:check(ID_bloccoprecedente, Lista_transazioni) of
+	Chain = case proof_of_work:check({ID_bloccoprecedente, Lista_transazioni}, Soluzione) of
 		true -> case dict:find(IDnuovo_blocco, CurrChain) of
 			{ok, Value} -> OurCurrentChain;
 			error ->
@@ -259,8 +259,7 @@ updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends) -
     {NewBlockID, PreviousBlockID, TransactionList, Solution} = NewBlock,
     {chain, Head, CurrentDictChain} = CurrentChain,
     case
-        % non mi è chiaro quale sia uso e input della check (id blocco o lista transazioni?)
-        proof_of_work:check(NewBlockID, Solution) and (dict:find(NewBlockID, CurrentDictChain) =:= error)
+        proof_of_work:check({NewBlockID, TransactionList}, Solution) and (dict:find(NewBlockID, CurrentDictChain) =:= error)
     of
         false -> CurrentChain;
         true ->
