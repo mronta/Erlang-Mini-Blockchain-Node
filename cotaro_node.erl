@@ -280,7 +280,7 @@ newDictChain(SenderPID, Nonce, Block, CurrentDictChain, NewDictChain) ->
 
 
 % CurrentChain {chain, HeadBlock, DictChain}
-newUpdateChain(SenderPID, Nonce, NewBlock, CurrentChain) ->
+newUpdatedChain(SenderPID, Nonce, NewBlock, CurrentChain) ->
     {NewBlockID, _, _, _} = NewBlock,
     {chain, _, CurrentDictChain} = CurrentChain,
     {
@@ -301,37 +301,6 @@ getLongestChain(Chain1, Chain2) ->
     end.
 
 
-%Controllo se la soluzione per il proof of work sia corretta, in caso negativo la nostra chain resta immutata,
-%altrimenti faccio le seguenti operazioni: se abbiamo già il blocco nel nostro dizionario, non aggiungo nulla e non faccio gossiping,
-%altrimenti aggiungo il blocco nel dizionario e faccio gossiping dell'update
-updateBlock(Block, OurCurrentChain, Friends) ->
-    {IDnuovo_blocco, ID_bloccoprecedente, Lista_transazioni, Soluzione} = Block,
-	{chain, Head, CurrChain} = OurCurrentChain,
-	Chain = case proof_of_work:check({ID_bloccoprecedente, Lista_transazioni}, Soluzione) of
-		true -> case dict:find(IDnuovo_blocco, CurrChain) of
-			{ok, Value} -> OurCurrentChain;
-			error ->
-                NewChain = dict:store(IDnuovo_blocco, Block, OurCurrentChain),
-				[F ! {update, Block} || F <- Friends],
-				{chain, Block, NewChain}
-			end;
-		false -> OurCurrentChain
-		end,
-		%cerchiamo sempre di determinare la catena più lunga fra la nostra e quella degli amici
-		%in modo da risolvere i casi di fork o qualora ci siamo appena connessi alla rete
-		ChainList = getChainsFromFriends(Chain, Friends, Block),
-		getLongestChainFromList(ChainList, Chain).
-
-
-getChainsFromFriends(ChainTupla, Friends, Block) -> [newUpdateChain(F, make_ref(), Block, ChainTupla) || F <- Friends].
-
-
-getLongestChainFromList([], CurrChain) -> CurrChain;
-getLongestChainFromList(ChainList, CurrChain) -> [H|Tail] = ChainList,
-													LongestChain = getLongestChain(H, CurrChain),
-													getLongestChainFromList(Tail, LongestChain).
-
-
 updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends) ->
     {NewBlockID, PreviousBlockID, TransactionList, Solution} = NewBlock,
     {chain, Head, CurrentDictChain} = CurrentChain,
@@ -343,7 +312,7 @@ updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends) -
             [F ! {update, NewBlock} || F <- Friends],
             getLongestChain(
                 CurrentChain,
-                newUpdateChain(NewBlockSender, make_ref(), NewBlock, CurrentChain)
+                newUpdatedChain(NewBlockSender, make_ref(), NewBlock, CurrentChain)
             )
     end.
 
