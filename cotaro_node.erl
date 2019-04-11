@@ -121,6 +121,10 @@ loop(MyFriends, State) ->
                                                 loop(MyFriends, NewState)
                                 end;
 
+		{get_head, Sender, Nonce} -> spawn_link(?MODULE, sendHeadActor, [Sender, Nonce, State#state.chain]);
+
+		{get_previous, Sender, Nonce, IDPreviousBlock} -> spawn_link(?MODULE, sendPreviousActor, [Sender, Nonce, State#state.chain, IDPreviousBlock]);
+
 
         {'EXIT', ActorDeadPID, Reason} ->   %abbiamo linkato tutti gli attori che abbiamo spawniamo, se questi terminano normalmente non facciamo nulla,
                                             %altrimenti li ri-lanciamo con le informazioni memorizzate nel dizionario di processo
@@ -141,6 +145,12 @@ loop(MyFriends, State) ->
 
     end.
 
+
+sendPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
+	Sender ! {previous, Nonce, getBlockFromChain(CurrentChain, IdBlock)}.
+
+sendHeadActor(Sender, Nonce, CurrentChain) ->
+	Sender ! {head, Nonce, getHead(CurrentChain)}.
 
 sleep(N) -> receive after N*1000 -> ok end.
 
@@ -199,13 +209,6 @@ sendToAllFriend([], _) -> nothingToDo;
 sendToAllFriend(FriendList, Message) -> lists:foreach(fun(FriendPID) -> FriendPID ! Message end, FriendList).
 
 
-% può essere usata per ottenere il blocco richiesto da messaggio 'get_previous'
-getBlockFromChain(CurrentChain, BlockID) ->
-    {chain, _, CurrentDictChain} = CurrentChain,
-    {ok, Block} = dict:find(BlockID, CurrentDictChain),
-    Block.
-
-
 searchTransactionInTheChain(IdTransaction, Chain) ->    try
                                                             {chain, IdHeadBlock, _} = Chain,
                                                             searchTransactionInTheChainAux(IdTransaction, IdHeadBlock, Chain)
@@ -238,6 +241,22 @@ searchTransactionInTheList(IdTransaction, NewTransactionList) ->    %predicato c
                                                                         {value, _} -> true;
                                                                         false -> false
                                                                     end.
+
+% può essere usata per ottenere il blocco richiesto da messaggio 'get_previous'
+getBlockFromChain(CurrentChain, BlockID) ->
+    {chain, _, CurrentDictChain} = CurrentChain,
+    case dict:find(BlockID, CurrentDictChain) of
+		{ok, Block} -> Block;
+		error -> {none, none, [], 0} %TODO: chiedere al prof di standardizzare questo comportamento
+	end.
+
+getHead([]) -> {none, none, [], 0};
+getHead(CurrentChain) -> 
+	{chain, IdHead, CurrentDictChain} = CurrentChain,
+	case dict:find(IdHead, CurrentDictChain) of
+		{ok, Head} -> Head;
+		error -> nothingToDo %abbiamo già IdHead come testa, l'errore non si verificherà mai
+	end.
 
 
 % crea un dizionario sulla base di quello originale considerando solo la "catena"
