@@ -1,7 +1,7 @@
 # TODO
 
-- [ ] Check reconstruction chain and whole update algorithm
-    <br>-Abort reconstruction if get_previous response not received in certain time
+- [ ] Check reconstruction chain and whole update algorithm 
+    <br>-Abort reconstruction if get_previous response not received in certain time or node to which it is asked does not have it
     <br>-Careful about 'Nonce' uses
 - [x] Handle update messages, like 'get_previous' and 'get_head'
 - [ ] Block mining
