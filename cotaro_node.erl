@@ -127,7 +127,7 @@ loop(MyFriends, State) ->
 
         {update, Sender, Block} -> spawn_link(?MODULE, getUpdatedChain, [self(), Sender, Block, State#state.chain, MyFriends]);
 
-        {updatedchain, UpdatedChain} ->
+        {updated_chain, UpdatedChain} ->
             NewState = State#state{chain = UpdatedChain},
             loop(MyFriends, NewState);
 
@@ -152,7 +152,7 @@ loop(MyFriends, State) ->
 
 
 getUpdatedChain(Father, NewBlockSender, NewBlock, CurrentChain, Friends) ->
-    Father ! {updatedchain, updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends)}.
+    Father ! {updated_chain, updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends)}.
 
 sendPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
 	Sender ! {previous, Nonce, getBlockFromChain(CurrentChain, IdBlock)}.
