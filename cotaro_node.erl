@@ -286,13 +286,21 @@ newDictChain(SenderPID, Nonce, Block, CurrentDictChain, NewDictChain) ->
                 SenderPID ! {get_previous, SenderPID, Nonce, PreviousBlockID},
                 receive
                     {previous, Nonce, PreviousBlock} ->
-                        newDictChain(
-                            SenderPID,
-                            Nonce,
-                            PreviousBlock,
-                            CurrentDictChain,
-                            NewDictChain
-                        )
+                        {ReceivedPreviousBlockID, _, _, _} = PreviousBlock,
+                        % se ReceivedPreviousBlockID == none, non catturato e gestito in after 
+                        case ReceivedPreviousBlockID =/= none of
+                                true -> newDictChain(
+                                        SenderPID,
+                                        Nonce,
+                                        PreviousBlock,
+                                        CurrentDictChain,
+                                        NewDictChain
+                                    )
+                        end
+                after 2000 ->
+                    % se previous non arriva entro timeout o nodo a cui l'ho chiesto non lo ha
+                    % viene ritornata lista vuota
+                    dict:new()
                 end
         end
     end.
