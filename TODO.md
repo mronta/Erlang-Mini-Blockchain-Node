@@ -1,3 +1,5 @@
+# TODO
+
 1) Check reconstruction chain and whole update algorithm
     <br>-Abort reconstruction if get_previous response not received in certain time
     <br>-Careful about 'Nonce' uses
