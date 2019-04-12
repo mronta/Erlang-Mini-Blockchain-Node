@@ -121,9 +121,9 @@ loop(MyFriends, State) ->
                                                 loop(MyFriends, NewState)
                                 end;
 
-		{get_head, Sender, Nonce} -> spawn_link(?MODULE, sendHeadActor, [Sender, Nonce, State#state.chain]);
+		{get_head, Sender, Nonce} -> launchGetHeadActor(Sender, Nonce, State#state.chain);
 
-		{get_previous, Sender, Nonce, IDPreviousBlock} -> spawn_link(?MODULE, sendPreviousActor, [Sender, Nonce, State#state.chain, IDPreviousBlock]);
+		{get_previous, Sender, Nonce, IDPreviousBlock} -> launchPreviousActor(Sender, Nonce, State#state.chain, IDPreviousBlock);
 
         {update, Sender, Block} -> spawn_link(?MODULE, getUpdatedChain, [self(), Sender, Block, State#state.chain, MyFriends]);
 
@@ -139,6 +139,9 @@ loop(MyFriends, State) ->
                                                             case ProcessData of
                                                                 launchTimerToAskFriendToTeacher -> launchTimerToAskFriendToTeacher();
                                                                 {watcher, PID} -> launchWatcher(PID);
+																%% Uso A, B, C, e D per evitare di usare variabili già bindate
+																{send_previous_actor, A, B, C, D} -> launchPreviousActor(A, B, C, D);
+																{send_head_actor, A, B, C} -> launchGetHeadActor(A, B, C);
                                                                 _ ->    %se non so gestire la exit mi suicido
                                                                         exit(Reason)
                                                             end
@@ -154,11 +157,27 @@ loop(MyFriends, State) ->
 getUpdatedChain(Father, NewBlockSender, NewBlock, CurrentChain, Friends) ->
     Father ! {updated_chain, updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends)}.
 
+%% se non abbiamo il precedente (Id pari all'atomo none), allora non inviamo il messaggio.
+%% in caso contrario, inviamo le informazioni del blocco richiesto
 sendPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
-	Sender ! {previous, Nonce, getBlockFromChain(CurrentChain, IdBlock)}.
+	{IdPrec, Id, ListTransaction, Solution} = getBlockFromChain(CurrentChain, IdBlock),
+	case Id of
+		none -> nothingToDo;
+		_ -> Sender ! {previous, Nonce, {IdPrec, Id, ListTransaction, Solution}}
+	end.
 
+launchPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->	Self = self(),
+																PreviousActorPID = spawn_link(?MODULE, sendPreviousActor, [Sender, Nonce, CurrentChain, IdBlock]),
+																put(PreviousActorPID, {send_previous_actor, Sender, Nonce, CurrentChain, IdBlock}).
+	
 sendHeadActor(Sender, Nonce, CurrentChain) ->
 	Sender ! {head, Nonce, getHead(CurrentChain)}.
+
+launchGetHeadActor(Sender, Nonce, CurrentChain) -> Self = self(),
+												   SendHeadPID = spawn_link(?MODULE, sendHeadActor, [Sender, Nonce, CurrentChain]),
+												   put(SendHeadPID, {send_head_actor, Sender, Nonce, CurrentChain}).
+
+
 
 sleep(N) -> receive after N*1000 -> ok end.
 
