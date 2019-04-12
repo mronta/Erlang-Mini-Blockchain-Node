@@ -149,6 +149,9 @@ loop(MyFriends, State) ->
                                                                 launchTimerToAskFriendToTeacher -> launchTimerToAskFriendToTeacher();
                                                                 {watcher, PID} -> launchWatcher(PID);
                                                                 {friendsAsker, FriendPID} -> launchFriendsAsker(FriendPID);
+																% Uso A, B, C, D per evitare di usare variabili già bindate
+																{send_previous_actor, A, B, C, D} -> launchPreviousActor(A, B, C, D);
+																{send_head_actor, A, B, C} -> launchGetHeadActor(A, B, C);
                                                                 _ ->    %se non so gestire la exit mi suicido
                                                                         exit(Reason)
                                                             end
