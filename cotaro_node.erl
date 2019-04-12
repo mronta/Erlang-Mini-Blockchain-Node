@@ -136,6 +136,11 @@ loop(MyFriends, State) ->
 
 		{get_previous, Sender, Nonce, IDPreviousBlock} -> spawn_link(?MODULE, sendPreviousActor, [Sender, Nonce, State#state.chain, IDPreviousBlock]);
 
+        {update, Sender, Block} -> spawn_link(?MODULE, getUpdatedChain, [self(), Sender, Block, State#state.chain, MyFriends]);
+
+        {updated_chain, UpdatedChain} ->
+            NewState = State#state{chain = UpdatedChain},
+            loop(MyFriends, NewState);
 
         {'EXIT', ActorDeadPID, Reason} ->   %abbiamo linkato tutti gli attori che abbiamo spawniamo, se questi terminano normalmente non facciamo nulla,
                                             %altrimenti li ri-lanciamo con le informazioni memorizzate nel dizionario di processo
@@ -157,6 +162,9 @@ loop(MyFriends, State) ->
 
     end.
 
+
+getUpdatedChain(Father, NewBlockSender, NewBlock, CurrentChain, Friends) ->
+    Father ! {updated_chain, updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends)}.
 
 sendPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
 	Sender ! {previous, Nonce, getBlockFromChain(CurrentChain, IdBlock)}.
@@ -366,7 +374,7 @@ getLongestChain(Chain1, Chain2) ->
         false -> Chain2
     end.
 
-
+% metodo da richiamare successivamente ad update
 updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends) ->
     {NewBlockID, PreviousBlockID, TransactionList, Solution} = NewBlock,
     {chain, Head, CurrentDictChain} = CurrentChain,
