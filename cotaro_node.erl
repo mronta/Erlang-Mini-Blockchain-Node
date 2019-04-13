@@ -176,15 +176,13 @@ sendPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
 		_ -> Sender ! {previous, Nonce, {IdPrec, Id, ListTransaction, Solution}}
 	end.
 
-launchPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->	Self = self(),
-																PreviousActorPID = spawn_link(?MODULE, sendPreviousActor, [Sender, Nonce, CurrentChain, IdBlock]),
+launchPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->	PreviousActorPID = spawn_link(?MODULE, sendPreviousActor, [Sender, Nonce, CurrentChain, IdBlock]),
 																put(PreviousActorPID, {send_previous_actor, Sender, Nonce, CurrentChain, IdBlock}).
 	
 sendHeadActor(Sender, Nonce, CurrentChain) ->
 	Sender ! {head, Nonce, getHead(CurrentChain)}.
 
-launchGetHeadActor(Sender, Nonce, CurrentChain) -> Self = self(),
-												   SendHeadPID = spawn_link(?MODULE, sendHeadActor, [Sender, Nonce, CurrentChain]),
+launchGetHeadActor(Sender, Nonce, CurrentChain) -> SendHeadPID = spawn_link(?MODULE, sendHeadActor, [Sender, Nonce, CurrentChain]),
 												   put(SendHeadPID, {send_head_actor, Sender, Nonce, CurrentChain}).
 
 
