@@ -348,14 +348,6 @@ searchTransactionInTheList(IdTransaction, NewTransactionList) ->
         false -> false
     end.
 
-% può essere usata per ottenere il blocco richiesto da messaggio 'get_previous'
-getBlockFromChain(CurrentChain, BlockID) ->
-    {chain, _, CurrentDictChain} = CurrentChain,
-    case dict:find(BlockID, CurrentDictChain) of
-		{ok, Block} -> Block;
-		error -> {none, none, [], 0} %TODO: chiedere al prof di standardizzare questo comportamento
-	end.
-
 getHead([]) -> {none, none, [], 0};
 getHead(CurrentChain) ->
 	{chain, IdHead, CurrentDictChain} = CurrentChain,
@@ -364,64 +356,13 @@ getHead(CurrentChain) ->
 		error -> nothingToDo %abbiamo già IdHead come testa, l'errore non si verificherà mai
 	end.
 
-
-% crea un dizionario sulla base di quello originale considerando solo la "catena"
-% che parte da BlockID
-iterDictChain(OriginalDict, Dict, BlockID) ->
-    %non dovrebbero essere possibili errori
-    Block = getBlockFromChain(OriginalDict, BlockID),
-    NewDict = dict:append(BlockID, Block, Dict),
-    {_, PreviousBlockID, _, _} = Block,
-    case PreviousBlockID of
-        none -> NewDict;
-        ExistingID -> iterDictChain(OriginalDict, NewDict, ExistingID)
-    end.
-
-
-% Alla chiamata della funzione NewDictChain è un dizionario vuoto
-newDictChain(SenderPID, Nonce, Block, CurrentDictChain, NewDictChain) ->
-    {BlockID, PreviousBlockID, _, _} = Block,
-    NewDictChain = dict:append(BlockID, Block, NewDictChain),
-    case PreviousBlockID =:= none of
-        true -> NewDictChain;
-        false -> case dict:find(PreviousBlockID, CurrentDictChain) of
-            {ok, Value} ->
-                RemainingDict = iterDictChain(CurrentDictChain, dict:new(), PreviousBlockID),
-                dict:merge(fun(K, V1, V2) -> V1 end, NewDictChain, RemainingDict);
-            error ->
-                SenderPID ! {get_previous, SenderPID, Nonce, PreviousBlockID},
-                receive
-                    {previous, Nonce, PreviousBlock} ->
-                        {ReceivedPreviousBlockID, _, _, _} = PreviousBlock,
-                        % se ReceivedPreviousBlockID == none, non catturato e gestito in after
-                        case ReceivedPreviousBlockID =/= none of
-                                true -> newDictChain(
-                                        SenderPID,
-                                        Nonce,
-                                        PreviousBlock,
-                                        CurrentDictChain,
-                                        NewDictChain
-                                    )
-                        end
-                after 2000 ->
-                    % se previous non arriva entro timeout o nodo a cui l'ho chiesto non lo ha
-                    % viene ritornata lista vuota
-                    dict:new()
-                end
-        end
-    end.
-
-
-% CurrentChain {chain, HeadBlock, DictChain}
-newUpdatedChain(SenderPID, Nonce, NewBlock, CurrentChain) ->
-    {NewBlockID, _, _, _} = NewBlock,
+% può essere usata per ottenere il blocco richiesto da messaggio 'get_previous'
+getBlockFromChain(CurrentChain, BlockID) ->
     {chain, _, CurrentDictChain} = CurrentChain,
-    {
-        chain,
-        NewBlockID,
-        newDictChain(SenderPID, Nonce, NewBlock, CurrentDictChain, dict:new())
-    }.
-
+    case dict:find(BlockID, CurrentDictChain) of
+		{ok, Block} -> Block;
+		error -> {none, none, [], 0}
+	end.
 
 % ritorna la catena più lunga tra le due in input
 % se la lunghezza è la stessa, viene ritornata la prima
@@ -431,6 +372,76 @@ getLongestChain(Chain1, Chain2) ->
     case length(dict:fetch_keys(DictChain1)) >= length(dict:fetch_keys(DictChain2)) of
         true -> Chain1;
         false -> Chain2
+    end.
+
+% restituisce il dizionario (catena) che va da BlockID a EndingBlockID (non incluso)
+% chiamata con 'BlockID' avente l'id della testa della catena
+getPartialDictChainFromBlockToBlock(OriginalDictChain, BlockID, EndingBlockID, PartialDictChain) ->
+    case BlockID =:= EndingBlockID of
+        true -> PartialDictChain;
+        false ->
+            Block = getBlockFromChain(OriginalDictChain, BlockID),
+            PartialDictChain = dict:append(BlockID, Block, PartialDictChain),
+            {_, PreviousBlockID, _, _} = Block,
+            getPartialDictChainFromBlockToBlock(OriginalDictChain, PreviousBlockID, EndingBlockID, PartialDictChain)
+    end.
+
+% restituisce la nuova catena risultante dopo l'esecuzione dell'update (e la ricezione del blocco corrispondente),
+% in particolare la catena più lunga tra quella corrente e quella derivata dal blocco ricevuto; 
+% 'NewBlockID' e 'NewDictChain' mantengono durante le chiamate ricorsive l'ID del blocco originale ricevuto in
+% seguito all'update e il dizionario (che viene aggiornato durante le chiamate) con il quale si costruisce la 
+% catena derivata da quest'ultimo
+getResultingChainFromUpdate(SenderPID, CurrentChain, Block, NewBlockID, NewDictChain) ->
+    {chain, CurrentHeadBlockID, CurrentDictChain} = CurrentChain,
+    {BlockID, PreviousBlockID, _, _} = Block,
+    NewDictChain = dict:append(BlockID, Block, NewDictChain),
+    case PreviousBlockID =:= none of
+        true ->
+            % nel caso in cui non vi siano nodi comuni tra la catena derivata dal blocco ricevuto e quella corrente
+            % viene ritornata la più lunga tra queste
+            getLongestChain(CurrentChain, {chain, NewBlockID, NewDictChain});
+        false -> case dict:find(PreviousBlockID, CurrentDictChain) of
+            {ok, Value} ->
+                % nel caso in cui ci sia un nodo comune tra la catena derivata dal blocco ricevuto e quella corrente
+                % queste dovrebbero avere una sotto-catena comune, viene quindi confrontata la lunghezza delle parti
+                % rimanenti delle catene senza questa e ritornata la catena nel complesso più lunga
+                PartialCurrentDictDelta = getPartialDictChainFromBlockToBlock(CurrentDictChain, CurrentHeadBlockID, PreviousBlockID, dict:new()),
+                PartialNewDictDelta = NewDictChain,
+                {chain, LongestDictHead, LongestDictDelta} = getLongestChain(
+                    {chain, CurrentHeadBlockID, PartialCurrentDictDelta},
+                    {chain, NewBlockID, PartialNewDictDelta}
+                ),
+                ChainsCommonDict = getPartialDictChainFromBlockToBlock(CurrentDictChain, PreviousBlockID, none, dict:new()),
+                {
+                    chain,
+                    LongestDictHead,
+                    dict:merge(fun(K, V1, V2) -> V1 end, LongestDictDelta, ChainsCommonDict)
+                };
+            error ->
+                % nel caso in cui non si sia arrivati alla conclusione o ad un blocco comune con quella corrente per 
+                % la catena derivata dal blocco ricevuto, è necessario continuare a richiedere i blocchi precedenti
+                % al fine di costruire quest'ultima
+                Nonce = make_ref(),
+                SenderPID ! {get_previous, SenderPID, Nonce, PreviousBlockID},
+                receive
+                    {previous, Nonce, PreviousBlock} ->
+                        {ReceivedPreviousBlockID, _, _, _} = PreviousBlock,
+                        % se ReceivedPreviousBlockID == none, non catturato e gestito in after
+                        case ReceivedPreviousBlockID =/= none of
+                                true -> getResultingChainFromUpdate(
+                                        SenderPID,
+                                        CurrentChain,
+                                        PreviousBlock,
+                                        NewBlockID, 
+                                        NewDictChain
+                                    )
+                        end
+                after 2000 ->
+                    % se previous non arriva entro timeout o nodo a cui l'ho chiesto non lo ha viene ritornata
+                    % viene ritornata la catena corrente
+                    CurrentChain
+                end
+        end
     end.
 
 % metodo da richiamare successivamente ad update
@@ -443,10 +454,7 @@ updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends) -
         false -> CurrentChain;
         true ->
             [F ! {update, NewBlock} || F <- Friends],
-            getLongestChain(
-                CurrentChain,
-                newUpdatedChain(NewBlockSender, make_ref(), NewBlock, CurrentChain)
-            )
+            getResultingChainFromUpdate(NewBlockSender, CurrentChain, NewBlock, NewBlock, dict:new())
     end.
 
 
