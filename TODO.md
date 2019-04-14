@@ -7,4 +7,4 @@
 - [ ] Block mining
     <br>-Handle transactions pool and inserting of them in blocks
     <br>-Interrupt mining if original chain is not anymore the current one and save in the pool the inserted transactions from the block is going to be discharged
-    <br>-When a new chain is obtained, pick from the previous chain the transaction not considered in the new one and save them in pool
+    <br>-When a new chain is obtained, pick from the previous chain the transaction not considered in the new one and save them in pool; also remove the transaction considered in the new chain from the pool
