@@ -167,6 +167,7 @@ loop(MyFriends, State) ->
             %altrimenti li ri-lanciamo con le informazioni memorizzate nel dizionario di processo
             case Reason of
                 normal ->   nothingToDo;
+				killed -> nothingToDo; %abbiamo appositamente killato l'attore
                 _ ->        ProcessData = get(ActorDeadPID),
                     case ProcessData of
                         launchTimerToAskFriendToTeacher -> launchTimerToAskFriendToTeacher();
@@ -174,7 +175,8 @@ loop(MyFriends, State) ->
                         {friendsAsker, FriendPID} -> launchFriendsAsker(FriendPID);
 						% Uso A, B, C, D per evitare di usare variabili già bindate
 						{send_previous_actor, A, B, C, D} -> launchPreviousActor(A, B, C, D);
-						{send_head_actor, A, B, C} -> launchGetHeadActor(A, B, C);
+						{send_head_actor, E, F, G} -> launchGetHeadActor(E, F, G);
+						{miner_actor, StateMiner, PIDMiner, TransactionsMiner} -> launchMinerActor(StateMiner, PIDMiner, TransactionsMiner);
                         _ ->    
                             %se non so gestire la exit mi suicido
                             exit(Reason)
@@ -456,6 +458,27 @@ updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends) -
             [F ! {update, NewBlock} || F <- Friends],
             getResultingChainFromUpdate(NewBlockSender, CurrentChain, NewBlock, NewBlock, dict:new())
     end.
+
+
+mine(ID_previousBlock, TransactionList) ->	BlockID = make_ref(),
+											Solution = proof_of_work:solve(ID_previousBlock, TransactionList),
+											{ID_previousBlock, BlockID, TransactionList, Solution}.
+
+%% registra se stesso con l'atomo miner_process, in modo da essere killato in caso di updateBlock sulle stesse transazioni su cui stiamo minando.
+%% Nel caso in cui il mining sia avvenuto con successo, manda a PID un messaggio contenente il nuovo stato (quindi la nuova catena).
+miner(State, PID, TransactionsToMine) ->	register(miner_process, self()),
+						%TransactionsToMine = lists:sublist(State#state.listOfTransaction, 10),
+						NewListOfTransactions = State#state.listOfTransaction -- (TransactionsToMine),
+						{chain, IdPrevious, DictChain} = State#state.chain,
+						NewBlock = mine(IdPrevious, TransactionsToMine),
+						{IdPreviousBlock, IdHead, Transactions, Solution} = NewBlock,
+						NewDictChain = dict:store(IdHead, NewBlock, DictChain),
+						NewChain = {chain, IdHead, NewDictChain},
+						NewState = State#state{chain=NewChain, listOfTransaction=NewListOfTransactions},
+						PID ! {mine_successful, NewState}.
+
+launchMinerActor(State, PID, TransactionsToMine) ->		MinerActorPID = spawn_link(?MODULE, miner, [State, PID, TransactionsToMine]),
+														put(MinerActorPID, {miner_actor, State, PID, TransactionsToMine}).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
