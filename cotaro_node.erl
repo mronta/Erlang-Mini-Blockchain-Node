@@ -21,7 +21,7 @@ launchNode() -> spawn(?MODULE, initializeNode, []).
 % - initializza lo stato del nuovo nodo
 % - richiede degli amici al nodo professore
 % - avvia il behaviour del nodo
-initializeNode() -> 
+initializeNode() ->
     State = #state{
         numberOfNotEnoughFriendRequest = 0,
         chain =  {chain, none, dict:new()},
@@ -34,13 +34,13 @@ initializeNode() ->
 loop(MyFriends, State) ->
     receive
 
-        {ping, Mittente, Nonce} ->  
+        {ping, Mittente, Nonce} ->
             %io:format("~p has received ping request, sending pong~n", [self()]),
             Mittente ! {pong, Nonce},
             loop(MyFriends, State);
 
 
-        {dead, Node} -> 
+        {dead, Node} ->
             %un amico è morto quindi il nodo aggiorna la sua lista di amici e ne cerca uno nuovo
             MyFriendsUpdated = MyFriends -- [Node],
             io:format("For ~p the node ~p is dead, friend list updated = ~w~n",[self(), Node, MyFriendsUpdated]),
@@ -51,17 +51,17 @@ loop(MyFriends, State) ->
             %gestirà solo il messaggio di risposta del teacher alla get_friends (quello con esattamente il Nonce memorizzato nel dizionario di processo)
             TeacherNonce = get(friendsTeacherNonce),
             if
-                TeacherNonce =:= Nonce ->   
+                TeacherNonce =:= Nonce ->
                     %per gestire l'arrivo di una lista di possibili amici mi invio internamente il messaggio privato apposito
                     self() ! {friendsInternalMessage, Friends},
                     erase(friendsTeacherNonce);
-                true -> 
+                true ->
                     %else
                     io:format("~p receive a friends list with a unknown nonce, so it erases the message~n", [self()])
             end,
             loop(MyFriends, State);
 
-        {friendsInternalMessage, OtherFriends} ->   
+        {friendsInternalMessage, OtherFriends} ->
             %una lista di nuovi possibili amici è stata ricevuta
             %selezioniamo solo i nuovi possibili amici rimuovendo noi stessi e nodi che già conosciamo
             NewFriends = OtherFriends -- (MyFriends ++ [self()]),
@@ -69,13 +69,13 @@ loop(MyFriends, State) ->
             ActualNumberOfNotEnoughFriendRequest = State#state.numberOfNotEnoughFriendRequest,
             %io:format("~p receive friend list, possible new friends = ~w~n", [self(), NewFriends]),
             case NewFriends of
-                [] when  ActualNumberOfNotEnoughFriendRequest+1 < length(MyFriends) ->  
+                [] when  ActualNumberOfNotEnoughFriendRequest+1 < length(MyFriends) ->
                     %non riusciamo ad agiungere amici ma abbiamo ancora amici a cui chiedere
                     NewState = State#state{numberOfNotEnoughFriendRequest = ActualNumberOfNotEnoughFriendRequest+1 },
                     askFriends(MyFriends),
                     loop(MyFriends, NewState);
 
-                [] when  ActualNumberOfNotEnoughFriendRequest+1 == length(MyFriends) -> 
+                [] when  ActualNumberOfNotEnoughFriendRequest+1 == length(MyFriends) ->
                     %non riusciamo ad agiungere amici e abbiamo già chiesto a tutti i nostri amici quindi chiediamo al nodo professore
                     NewState = State#state{numberOfNotEnoughFriendRequest = ActualNumberOfNotEnoughFriendRequest+1 },
                     askFriendsToTeacher(),
@@ -86,20 +86,20 @@ loop(MyFriends, State) ->
                     launchTimerToAskFriendToTeacher(),
                     loop(MyFriends, NewState);
 
-                _ ->    
+                _ ->
                     %abbiamo dei nuovi potenziali amici da aggiungere
                     MyNewListOfFriends = addFriends(MyFriends, NewFriends),
                     %se anche con i nuovi amici non riusciamo a raggiungere il numero necessario, applichiamo lo stesso comportamento visto sopra,
                     %altrimenti azzeriamo il numero di chiamate che non sono state sufficienti perchè abbiamo raggiunto il numero di amici richiesto
                     case length(MyNewListOfFriends) < ?NumberOfFriendsRequired of
                         true -> case ActualNumberOfNotEnoughFriendRequest of
-                            X when X+1 < length(MyNewListOfFriends) ->  
+                            X when X+1 < length(MyNewListOfFriends) ->
                                 NewState = State#state{numberOfNotEnoughFriendRequest = ActualNumberOfNotEnoughFriendRequest+1 },
                                 askFriends(MyNewListOfFriends);
-                            X when X+1 == length(MyNewListOfFriends) -> 
+                            X when X+1 == length(MyNewListOfFriends) ->
                                 NewState = State#state{numberOfNotEnoughFriendRequest = ActualNumberOfNotEnoughFriendRequest+1 },
                                 askFriendsToTeacher();
-                            X when X+1 > length(MyNewListOfFriends) ->  
+                            X when X+1 > length(MyNewListOfFriends) ->
                                 NewState = State#state{numberOfNotEnoughFriendRequest = ActualNumberOfNotEnoughFriendRequest+1 },
                                 launchTimerToAskFriendToTeacher()
                         end;
@@ -109,7 +109,7 @@ loop(MyFriends, State) ->
             end;
 
 
-        {timer_askFriendsToTeacher} ->  
+        {timer_askFriendsToTeacher} ->
             %controlliamo se nel frattempo è successo qualcosa che ci ha fatto raggiungere il numero necessario di amicizie,
             %se non è così chiediamo al professore
             case length(MyFriends) < ?NumberOfFriendsRequired of
@@ -119,14 +119,14 @@ loop(MyFriends, State) ->
             loop(MyFriends, State);
 
 
-        {get_friends, Sender, Nonce} -> 
+        {get_friends, Sender, Nonce} ->
             %ci arriva una richiesta di trasmissione dei nostri amici, quindi inviamo la nostra lista al mittente
             %io:format("~p send friend list to ~p ~n", [self(), Sender]),
             Sender ! {friends, Nonce, MyFriends},
             loop(MyFriends, State);
 
 
-        {push, Transaction} ->  
+        {push, Transaction} ->
             %Transaction = {IDtransazione, Payload}
             {IdTransaction, _} = Transaction,
             %controlliamo se la transazione in questione è già presente nella nostra catena
@@ -135,11 +135,11 @@ loop(MyFriends, State) ->
             TransactionFoundInTheList = searchTransactionInTheList(IdTransaction, State#state.listOfTransaction),
             TransactionFound = TransactionFoundInTheChain or TransactionFoundInTheList,
                 case TransactionFound of
-                    true -> 
+                    true ->
                         %se conoscevamo già la transazione, non facciamo nulla
                         nothingToDo,
                         loop(MyFriends, State);
-                    false ->   
+                    false ->
                         %se non la conoscevamo, la inseriamo nella lista della transazione da provare ad inserire nei prossimi blocchi
                         %e poi la ritrasmettiamo ai nostri amici
                         io:format("~p receive a new transaction with ID ~w~n", [self(), IdTransaction]),
@@ -149,20 +149,20 @@ loop(MyFriends, State) ->
                         loop(MyFriends, NewState)
                 end;
 
-		{get_head, Sender, Nonce} -> 
+		{get_head, Sender, Nonce} ->
             launchGetHeadActor(Sender, Nonce, State#state.chain);
 
-		{get_previous, Sender, Nonce, IDPreviousBlock} -> 
+		{get_previous, Sender, Nonce, IDPreviousBlock} ->
             launchPreviousActor(Sender, Nonce, State#state.chain, IDPreviousBlock);
 
-        {update, Sender, Block} -> 
+        {update, Sender, Block} ->
             spawn_link(?MODULE, getUpdatedChain, [self(), Sender, Block, State#state.chain, MyFriends]);
 
         {updated_chain, UpdatedChain} ->
             NewState = State#state{chain = UpdatedChain},
             loop(MyFriends, NewState);
 
-        {'EXIT', ActorDeadPID, Reason} ->   
+        {'EXIT', ActorDeadPID, Reason} ->
             %abbiamo linkato tutti gli attori che abbiamo spawniamo, se questi terminano normalmente non facciamo nulla,
             %altrimenti li ri-lanciamo con le informazioni memorizzate nel dizionario di processo
             case Reason of
@@ -177,7 +177,7 @@ loop(MyFriends, State) ->
 						{send_previous_actor, A, B, C, D} -> launchPreviousActor(A, B, C, D);
 						{send_head_actor, E, F, G} -> launchGetHeadActor(E, F, G);
 						{miner_actor, StateMiner, PIDMiner, TransactionsMiner} -> launchMinerActor(StateMiner, PIDMiner, TransactionsMiner);
-                        _ ->    
+                        _ ->
                             %se non so gestire la exit mi suicido
                             exit(Reason)
                     end
@@ -203,11 +203,11 @@ sendPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
 launchPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
     PreviousActorPID = spawn_link(?MODULE, sendPreviousActor, [Sender, Nonce, CurrentChain, IdBlock]),
 	put(PreviousActorPID, {send_previous_actor, Sender, Nonce, CurrentChain, IdBlock}).
-	
+
 sendHeadActor(Sender, Nonce, CurrentChain) ->
 	Sender ! {head, Nonce, getHead(CurrentChain)}.
 
-launchGetHeadActor(Sender, Nonce, CurrentChain) -> 
+launchGetHeadActor(Sender, Nonce, CurrentChain) ->
     SendHeadPID = spawn_link(?MODULE, sendHeadActor, [Sender, Nonce, CurrentChain]),
 	put(SendHeadPID, {send_head_actor, Sender, Nonce, CurrentChain}).
 
@@ -216,14 +216,14 @@ launchGetHeadActor(Sender, Nonce, CurrentChain) ->
 sleep(N) -> receive after N*1000 -> ok end.
 
 
-launchWatcher(PID) ->   
+launchWatcher(PID) ->
     Self = self(),
     WatcherPID = spawn_link(fun () -> watch(Self,PID) end),
     %inseriamo le informazioni sull'attore watcher lanciato nel dizionario di processo così che
     %se questo muore per qualche ragione, venga rilanciato
     put(WatcherPID, {watcher, PID}).
 
-watch(Main,Node) ->   
+watch(Main,Node) ->
     sleep(10),
     Ref = make_ref(),
     Node ! {ping, self(), Ref},
@@ -236,12 +236,11 @@ watch(Main,Node) ->
 launchTimerToAskFriendToTeacher() ->
     Creator = self(),
     TimerPID =  spawn_link(
-        fun () -> 
+        fun () ->
             %io:format("~p launch timer to ask friends to teacher~n", [Creator]),
             sleep(10),
             Creator ! {timer_askFriendsToTeacher}
         end),
-    link(TimerPID),
     %inseriamo le informazioni sull'attore timer lanciato nel dizionario di processo così che
     %se questo muore per qualche ragione, venga rilanciato
     put(TimerPID, launchTimerToAskFriendToTeacher).
@@ -253,7 +252,7 @@ launchFriendsAsker(FriendPID) ->
     %se questo muore per qualche ragione, venga rilanciato
     put(FriendsAskerPID, {friendsAsker, FriendPID}).
 
-friendsAsker(FriendPID, MyPID) ->   
+friendsAsker(FriendPID, MyPID) ->
     Nonce = make_ref(),
     FriendPID ! {get_friends, self(), Nonce},
     receive
@@ -269,7 +268,7 @@ askFriends([]) ->
     %di controllare che sia esattamente quello atteso dal teacher
     put(friendsTeacherNonce, Nonce),
     global:send(teacher_node, {get_friends, self(), Nonce});
-askFriends(MyFriends) ->    
+askFriends(MyFriends) ->
     %selezioniamo casualmente uno dei nostri amici e gli inviamo una richiesta per ottenere la sua lista di amici
     SelectedFriend = lists:nth(rand:uniform(length(MyFriends)), MyFriends),
     io:format("~p require friends to ~p~n", [self(), SelectedFriend]),
@@ -279,28 +278,28 @@ askFriends(MyFriends) ->
 addFriends(MyFriends, []) ->
     io:format("~p updated friend list = ~w ~n", [self(), MyFriends]),
     MyFriends;
-addFriends(MyFriends, OtherFriends) ->  
+addFriends(MyFriends, OtherFriends) ->
     %aggiungiamo amici finchè non raggiungiamo il numero necessario o finiscono i potenziali nuovi amici
     %la scelta di un nuovo amico, tra i potenziali a disposizione è casuale e su questo viene lanciato un watcher
     %per controllare che rimanga in vita
     case length(MyFriends) < ?NumberOfFriendsRequired of
-        true -> 
+        true ->
             NewFriend = lists:nth(rand:uniform(length(OtherFriends)), OtherFriends),
             %io:format("~p add a new friend ~p~n",[self(), NewFriend]),
             launchWatcher(NewFriend),
             addFriends( MyFriends ++ [NewFriend], OtherFriends -- [NewFriend]);
-        false -> 
+        false ->
             io:format("~p updated friend list = ~w ~n", [self(), MyFriends]),
             MyFriends
     end.
 
 
 sendToAllFriend([], _) -> nothingToDo;
-sendToAllFriend(FriendList, Message) -> 
+sendToAllFriend(FriendList, Message) ->
     lists:foreach(fun(FriendPID) -> sendMessageWithDisturbance(FriendPID, Message) end, FriendList).
 
 
-sendMessageWithDisturbance(DestinationPID, Message) ->  
+sendMessageWithDisturbance(DestinationPID, Message) ->
     %ogni volta che inviate un messaggio, ci deve essere una probabilità su 10 di non inviarlo e una su 10 di inviarne due copie
     case rand:uniform(10) of
         0 ->    %non invio il messaggio
@@ -314,7 +313,7 @@ sendMessageWithDisturbance(DestinationPID, Message) ->
     end.
 
 
-searchTransactionInTheChain(IdTransaction, Chain) ->    
+searchTransactionInTheChain(IdTransaction, Chain) ->
     try
         {chain, IdHeadBlock, _} = Chain,
         searchTransactionInTheChainAux(IdTransaction, IdHeadBlock, Chain)
@@ -323,7 +322,7 @@ searchTransactionInTheChain(IdTransaction, Chain) ->
     end.
 %la searchTransactionInTheChainAux solleva un'eccezione 'found' nel momento in cui trova in un blocco della catena la transazione cercata
 searchTransactionInTheChainAux(_, none, _) -> false ;
-searchTransactionInTheChainAux(IdTransaction, IdBlock, Chain) ->    
+searchTransactionInTheChainAux(IdTransaction, IdBlock, Chain) ->
     Block = getBlockFromChain(Chain,IdBlock),
     {_, IDPreviousBlock, CurrentTransactionList, _} = Block,
     %predicato che ritorna true se la transazione in input è quella cercata (stesso ID), false altrimenti
@@ -337,7 +336,7 @@ searchTransactionInTheChainAux(IdTransaction, IdBlock, Chain) ->
         {value, _} -> throw(found);
         false -> searchTransactionInTheChainAux(IdTransaction, IDPreviousBlock, Chain)
     end.
-searchTransactionInTheList(IdTransaction, NewTransactionList) ->    
+searchTransactionInTheList(IdTransaction, NewTransactionList) ->
     %predicato che ritorna true se la transazione in input è quella cercata (stesso ID), false altrimenti
     IsTheSearchedTransaction =  fun(Trans) ->   {CurrentTransID, _} = Trans,
                                                 case CurrentTransID of
@@ -389,9 +388,9 @@ getPartialDictChainFromBlockToBlock(OriginalDictChain, BlockID, EndingBlockID, P
     end.
 
 % restituisce la nuova catena risultante dopo l'esecuzione dell'update (e la ricezione del blocco corrispondente),
-% in particolare la catena più lunga tra quella corrente e quella derivata dal blocco ricevuto; 
+% in particolare la catena più lunga tra quella corrente e quella derivata dal blocco ricevuto;
 % 'NewBlockID' e 'NewDictChain' mantengono durante le chiamate ricorsive l'ID del blocco originale ricevuto in
-% seguito all'update e il dizionario (che viene aggiornato durante le chiamate) con il quale si costruisce la 
+% seguito all'update e il dizionario (che viene aggiornato durante le chiamate) con il quale si costruisce la
 % catena derivata da quest'ultimo
 getResultingChainFromUpdate(SenderPID, CurrentChain, Block, NewBlockID, NewDictChain) ->
     {chain, CurrentHeadBlockID, CurrentDictChain} = CurrentChain,
@@ -420,7 +419,7 @@ getResultingChainFromUpdate(SenderPID, CurrentChain, Block, NewBlockID, NewDictC
                     dict:merge(fun(K, V1, V2) -> V1 end, LongestDictDelta, ChainsCommonDict)
                 };
             error ->
-                % nel caso in cui non si sia arrivati alla conclusione o ad un blocco comune con quella corrente per 
+                % nel caso in cui non si sia arrivati alla conclusione o ad un blocco comune con quella corrente per
                 % la catena derivata dal blocco ricevuto, è necessario continuare a richiedere i blocchi precedenti
                 % al fine di costruire quest'ultima
                 Nonce = make_ref(),
@@ -434,7 +433,7 @@ getResultingChainFromUpdate(SenderPID, CurrentChain, Block, NewBlockID, NewDictC
                                         SenderPID,
                                         CurrentChain,
                                         PreviousBlock,
-                                        NewBlockID, 
+                                        NewBlockID,
                                         NewDictChain
                                     )
                         end
