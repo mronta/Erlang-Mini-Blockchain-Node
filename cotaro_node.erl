@@ -190,7 +190,7 @@ loop(MyFriends, State) ->
 						% Uso A, B, C, D per evitare di usare variabili già bindate
 						{send_previous_actor, A, B, C, D} -> launchPreviousActor(A, B, C, D);
 						{send_head_actor, E, F, G} -> launchGetHeadActor(E, F, G);
-						{miner_actor, StateMiner, PIDMiner, TransactionsMiner} -> launchMinerActor(StateMiner, PIDMiner, TransactionsMiner);
+						{miner_actor, IdPreviousBlock, PIDMiner, TransactionsMiner} -> launchMinerActor(IdPreviousBlock, PIDMiner, TransactionsMiner);
                         _ ->
                             %se non so gestire la exit mi suicido
                             exit(Reason)
@@ -495,21 +495,15 @@ mine(ID_previousBlock, TransactionList) ->
 
 %% registra se stesso con l'atomo miner_process, in modo da essere killato in caso di updateBlock sulle stesse transazioni su cui stiamo minando.
 %% Nel caso in cui il mining sia avvenuto con successo, manda a PID un messaggio contenente il nuovo stato (quindi la nuova catena).
-miner(State, PID, TransactionsToMine) ->	
+miner(IdPreviousBlock, PID, TransactionsToMine) ->	
     register(miner_process, self()),
     %TransactionsToMine = lists:sublist(State#state.listOfTransaction, 10),
-    NewListOfTransactions = State#state.listOfTransaction -- (TransactionsToMine),
-    {chain, IdPrevious, DictChain} = State#state.chain,
-    NewBlock = mine(IdPrevious, TransactionsToMine),
-    {IdPreviousBlock, IdHead, Transactions, Solution} = NewBlock,
-    NewDictChain = dict:store(IdHead, NewBlock, DictChain),
-    NewChain = {chain, IdHead, NewDictChain},
-    NewState = State#state{chain=NewChain, listOfTransaction=NewListOfTransactions},
-    PID ! {mine_successful, NewState}.
+    NewBlock = mine(IdPreviousBlock, TransactionsToMine),
+    PID ! {mine_successful, NewBlock}.
 
-launchMinerActor(State, PID, TransactionsToMine) ->		
-    MinerActorPID = spawn_link(?MODULE, miner, [State, PID, TransactionsToMine]),
-	put(MinerActorPID, {miner_actor, State, PID, TransactionsToMine}).
+launchMinerActor(IdPreviousBlock, PID, TransactionsToMine) ->		
+    MinerActorPID = spawn_link(?MODULE, miner, [IdPreviousBlock, PID, TransactionsToMine]),
+	put(MinerActorPID, {miner_actor, IdPreviousBlock, PID, TransactionsToMine}).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
