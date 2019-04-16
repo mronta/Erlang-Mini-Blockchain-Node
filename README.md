@@ -1,3 +1,3 @@
 # Erlang Mini-Blockchain Node
 
-The node specification can be found at: https://github.com/sacerdot/MiniErlangBlockchain
+The node specification can be found (in italian) at: https://github.com/sacerdot/MiniErlangBlockchain

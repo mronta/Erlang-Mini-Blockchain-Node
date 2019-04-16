@@ -12,7 +12,7 @@
 %         (ovvero l'ultimo che è stato inserito) ed infine l'ultimo campo è il dizionario che utilizziamo per memorizzare tutti i blocchi che compongono la nostra catena.
 %         Il dizionario usa come chiavi gli ID dei blocchi e come valori gli oggetti "blocco" corrispondenti.
 % - listOfTransaction: è la lista delle nuove transazioni che riceviamo e che possiamo inserire in un nuovo blocco dopo averlo minato
--record(state, {numberOfNotEnoughFriendRequest, chain, listOfTransaction}).
+-record(state, {numberOfNotEnoughFriendRequest, chain, listOfTransaction, updateNotInProgress}).
 
 %utilizzata per lanciare un nuovo nodo
 launchNode() -> spawn(?MODULE, initializeNode, []).
@@ -25,7 +25,8 @@ initializeNode() ->
     State = #state{
         numberOfNotEnoughFriendRequest = 0,
         chain =  {chain, none, dict:new()},
-        listOfTransaction = []
+        listOfTransaction = [],
+        updateNotInProgress = true
     },
     process_flag(trap_exit, true),
     askFriendsToTeacher(),
@@ -156,11 +157,24 @@ loop(MyFriends, State) ->
             launchPreviousActor(Sender, Nonce, State#state.chain, IDPreviousBlock);
 
         {update, Sender, Block} ->
-            spawn_link(?MODULE, getUpdatedChain, [self(), Sender, Block, State#state.chain, MyFriends]);
+            spawn_link(?MODULE, handleUpdate, [self(), Sender, Block, State#state.chain, MyFriends]);
 
-        {updated_chain, UpdatedChain} ->
-            NewState = State#state{chain = UpdatedChain},
-            loop(MyFriends, NewState);
+        {update_response, UpdateResponse} ->
+            case State#state.updateNotInProgress of
+                true ->
+                    spawn_link(?MODULE, computeLongestChain, [self(), State#state.chain, UpdateResponse]),
+                    NewState = State#state{updateNotInProgress = false},
+                    loop(MyFriends, NewState);
+                false ->
+                    self() ! {update_response, UpdateResponse}
+            end;
+
+        {longest_result, Result} ->
+            case Result of
+                {changes_required, NewChain} -> 
+                NewState = State#state{chain = NewChain, updateNotInProgress = true},
+                loop(MyFriends, NewState)
+            end;
 
         {'EXIT', ActorDeadPID, Reason} ->
             %abbiamo linkato tutti gli attori che abbiamo spawniamo, se questi terminano normalmente non facciamo nulla,
@@ -187,9 +201,44 @@ loop(MyFriends, State) ->
             loop(MyFriends, State)
     end.
 
+handleUpdate(FatherPID, NewBlockSenderPID, NewBlock, CurrentChain, Friends) ->
+    FatherPID ! updateHandling(NewBlockSenderPID, NewBlock, CurrentChain, Friends).
 
-getUpdatedChain(Father, NewBlockSender, NewBlock, CurrentChain, Friends) ->
-    Father ! {updated_chain, updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends)}.
+% ritorna la catena più lunga tra le due in input (true se la prima è più lunga, false altrimenti)
+% se la lunghezza è la stessa, viene ritornata la prima
+getLongestChain(Chain1, Chain2) ->
+    {chain, _, DictChain1} = Chain1,
+    {chain, _, DictChain2} = Chain2,
+    length(dict:fetch_keys(DictChain1)) >= length(dict:fetch_keys(DictChain2)).
+
+computeLongestChain(FatherPID, CurrentChain, UpdateResponse) ->
+    Response = {longest_result, no_changes_required},
+    case UpdateResponse of
+        {no_common_nodes, NewChain} ->
+            case getLongestChain(CurrentChain, NewChain) of
+                false -> 
+                    Response = {longest_result, {changes_required, NewChain}}
+            end;
+        {common_nodes, NewChainDelta, CommonBlockID} ->
+            {chain, CurrentHeadBlockID, CurrentDictChain} = CurrentChain,
+            PartialCurrentDictDelta = getPartialDictChainFromBlockToBlock(CurrentDictChain, CurrentHeadBlockID, CommonBlockID, dict:new()),
+            case getLongestChain(PartialCurrentDictDelta, NewChainDelta) of
+                false ->
+                    {chain, NewHeadBlockID, _} = NewChainDelta,
+                    ChainsCommonSubChain = getPartialDictChainFromBlockToBlock(CurrentDictChain, CommonBlockID, none, dict:new()),
+                    NewChain = {
+                        chain,
+                        NewHeadBlockID,
+                        dict:merge(
+                            fun(K, V1, V2) -> V1 end, 
+                            NewChainDelta, 
+                            ChainsCommonSubChain
+                        )
+                    },
+                    Response = {longest_result, {changes_required, NewChain}}
+            end
+    end,
+    FatherPID ! Response.
 
 %% se non abbiamo il precedente (Id pari all'atomo none), allora non inviamo il messaggio.
 %% in caso contrario, inviamo le informazioni del blocco richiesto
@@ -326,24 +375,26 @@ searchTransactionInTheChainAux(IdTransaction, IdBlock, Chain) ->
     Block = getBlockFromChain(Chain,IdBlock),
     {_, IDPreviousBlock, CurrentTransactionList, _} = Block,
     %predicato che ritorna true se la transazione in input è quella cercata (stesso ID), false altrimenti
-    IsTheSearchedTransaction =  fun(Trans) ->   {CurrentTransID, _} = Trans,
-                                                case CurrentTransID of
-                                                    IdTransaction -> true;
-                                                    _ -> false
-                                                end
-                                end,
+    IsTheSearchedTransaction =  
+        fun(Trans) ->   {CurrentTransID, _} = Trans,
+            case CurrentTransID of
+                IdTransaction -> true;
+                _ -> false
+            end
+        end,
     case lists:search(IsTheSearchedTransaction, CurrentTransactionList) of
         {value, _} -> throw(found);
         false -> searchTransactionInTheChainAux(IdTransaction, IDPreviousBlock, Chain)
     end.
 searchTransactionInTheList(IdTransaction, NewTransactionList) ->
     %predicato che ritorna true se la transazione in input è quella cercata (stesso ID), false altrimenti
-    IsTheSearchedTransaction =  fun(Trans) ->   {CurrentTransID, _} = Trans,
-                                                case CurrentTransID of
-                                                    IdTransaction -> true;
-                                                    _ -> false
-                                                end
-                                end,
+    IsTheSearchedTransaction =  
+        fun(Trans) ->   {CurrentTransID, _} = Trans,
+            case CurrentTransID of
+                IdTransaction -> true;
+                _ -> false
+            end
+        end,
     case lists:search(IsTheSearchedTransaction, NewTransactionList) of
         {value, _} -> true;
         false -> false
@@ -365,16 +416,6 @@ getBlockFromChain(CurrentChain, BlockID) ->
 		error -> {none, none, [], 0}
 	end.
 
-% ritorna la catena più lunga tra le due in input
-% se la lunghezza è la stessa, viene ritornata la prima
-getLongestChain(Chain1, Chain2) ->
-    {chain, _, DictChain1} = Chain1,
-    {chain, _, DictChain2} = Chain2,
-    case length(dict:fetch_keys(DictChain1)) >= length(dict:fetch_keys(DictChain2)) of
-        true -> Chain1;
-        false -> Chain2
-    end.
-
 % restituisce il dizionario (catena) che va da BlockID a EndingBlockID (non incluso)
 % chiamata con 'BlockID' avente l'id della testa della catena
 getPartialDictChainFromBlockToBlock(OriginalDictChain, BlockID, EndingBlockID, PartialDictChain) ->
@@ -387,8 +428,7 @@ getPartialDictChainFromBlockToBlock(OriginalDictChain, BlockID, EndingBlockID, P
             getPartialDictChainFromBlockToBlock(OriginalDictChain, PreviousBlockID, EndingBlockID, PartialDictChain)
     end.
 
-% restituisce la nuova catena risultante dopo l'esecuzione dell'update (e la ricezione del blocco corrispondente),
-% in particolare la catena più lunga tra quella corrente e quella derivata dal blocco ricevuto;
+% restituisce la catena risultante dal blocco ricevuto in fase di update;
 % 'NewBlockID' e 'NewDictChain' mantengono durante le chiamate ricorsive l'ID del blocco originale ricevuto in
 % seguito all'update e il dizionario (che viene aggiornato durante le chiamate) con il quale si costruisce la
 % catena derivata da quest'ultimo
@@ -398,26 +438,15 @@ getResultingChainFromUpdate(SenderPID, CurrentChain, Block, NewBlockID, NewDictC
     NewDictChain = dict:append(BlockID, Block, NewDictChain),
     case PreviousBlockID =:= none of
         true ->
-            % nel caso in cui non vi siano nodi comuni tra la catena derivata dal blocco ricevuto e quella corrente
-            % viene ritornata la più lunga tra queste
-            getLongestChain(CurrentChain, {chain, NewBlockID, NewDictChain});
+            % caso in cui non vi siano nodi comuni tra la catena derivata dal blocco ricevuto e quella corrente
+            {update_response, {no_common_nodes, {chain, NewBlockID, NewDictChain}}};
         false -> case dict:find(PreviousBlockID, CurrentDictChain) of
             {ok, Value} ->
-                % nel caso in cui ci sia un nodo comune tra la catena derivata dal blocco ricevuto e quella corrente
-                % queste dovrebbero avere una sotto-catena comune, viene quindi confrontata la lunghezza delle parti
-                % rimanenti delle catene senza questa e ritornata la catena nel complesso più lunga
-                PartialCurrentDictDelta = getPartialDictChainFromBlockToBlock(CurrentDictChain, CurrentHeadBlockID, PreviousBlockID, dict:new()),
+                % caso in cui ci sia un nodo comune tra la catena derivata dal blocco ricevuto e quella corrente;
+                % queste dovrebbero avere una sotto-catena comune, viene ritornata la catena senza questa parte
+                % comune
                 PartialNewDictDelta = NewDictChain,
-                {chain, LongestDictHead, LongestDictDelta} = getLongestChain(
-                    {chain, CurrentHeadBlockID, PartialCurrentDictDelta},
-                    {chain, NewBlockID, PartialNewDictDelta}
-                ),
-                ChainsCommonDict = getPartialDictChainFromBlockToBlock(CurrentDictChain, PreviousBlockID, none, dict:new()),
-                {
-                    chain,
-                    LongestDictHead,
-                    dict:merge(fun(K, V1, V2) -> V1 end, LongestDictDelta, ChainsCommonDict)
-                };
+                {update_response, {common_nodes, {chain, NewBlockID, PartialNewDictDelta}}, PreviousBlockID};
             error ->
                 % nel caso in cui non si sia arrivati alla conclusione o ad un blocco comune con quella corrente per
                 % la catena derivata dal blocco ricevuto, è necessario continuare a richiedere i blocchi precedenti
@@ -438,15 +467,15 @@ getResultingChainFromUpdate(SenderPID, CurrentChain, Block, NewBlockID, NewDictC
                                     )
                         end
                 after 2000 ->
-                    % se previous non arriva entro timeout o nodo a cui l'ho chiesto non lo ha viene ritornata
-                    % viene ritornata la catena corrente
-                    CurrentChain
+                    % se previous non arriva entro timeout o nodo a cui l'ho chiesto non lo ha, viene ritornato
+                    % un atomo che indica che la catena non deve essere considerata
+                    {update_response, discharged_chain}
                 end
         end
     end.
 
 % metodo da richiamare successivamente ad update
-updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends) ->
+updateHandling(NewBlockSender, NewBlock, CurrentChain, Friends) ->
     {NewBlockID, PreviousBlockID, TransactionList, Solution} = NewBlock,
     {chain, Head, CurrentDictChain} = CurrentChain,
     case
@@ -459,25 +488,28 @@ updateChainAfterReceivedBlock(NewBlockSender, NewBlock, CurrentChain, Friends) -
     end.
 
 
-mine(ID_previousBlock, TransactionList) ->	BlockID = make_ref(),
-											Solution = proof_of_work:solve(ID_previousBlock, TransactionList),
-											{ID_previousBlock, BlockID, TransactionList, Solution}.
+mine(ID_previousBlock, TransactionList) ->	
+    BlockID = make_ref(),
+    Solution = proof_of_work:solve(ID_previousBlock, TransactionList),
+    {ID_previousBlock, BlockID, TransactionList, Solution}.
 
 %% registra se stesso con l'atomo miner_process, in modo da essere killato in caso di updateBlock sulle stesse transazioni su cui stiamo minando.
 %% Nel caso in cui il mining sia avvenuto con successo, manda a PID un messaggio contenente il nuovo stato (quindi la nuova catena).
-miner(State, PID, TransactionsToMine) ->	register(miner_process, self()),
-						%TransactionsToMine = lists:sublist(State#state.listOfTransaction, 10),
-						NewListOfTransactions = State#state.listOfTransaction -- (TransactionsToMine),
-						{chain, IdPrevious, DictChain} = State#state.chain,
-						NewBlock = mine(IdPrevious, TransactionsToMine),
-						{IdPreviousBlock, IdHead, Transactions, Solution} = NewBlock,
-						NewDictChain = dict:store(IdHead, NewBlock, DictChain),
-						NewChain = {chain, IdHead, NewDictChain},
-						NewState = State#state{chain=NewChain, listOfTransaction=NewListOfTransactions},
-						PID ! {mine_successful, NewState}.
+miner(State, PID, TransactionsToMine) ->	
+    register(miner_process, self()),
+    %TransactionsToMine = lists:sublist(State#state.listOfTransaction, 10),
+    NewListOfTransactions = State#state.listOfTransaction -- (TransactionsToMine),
+    {chain, IdPrevious, DictChain} = State#state.chain,
+    NewBlock = mine(IdPrevious, TransactionsToMine),
+    {IdPreviousBlock, IdHead, Transactions, Solution} = NewBlock,
+    NewDictChain = dict:store(IdHead, NewBlock, DictChain),
+    NewChain = {chain, IdHead, NewDictChain},
+    NewState = State#state{chain=NewChain, listOfTransaction=NewListOfTransactions},
+    PID ! {mine_successful, NewState}.
 
-launchMinerActor(State, PID, TransactionsToMine) ->		MinerActorPID = spawn_link(?MODULE, miner, [State, PID, TransactionsToMine]),
-														put(MinerActorPID, {miner_actor, State, PID, TransactionsToMine}).
+launchMinerActor(State, PID, TransactionsToMine) ->		
+    MinerActorPID = spawn_link(?MODULE, miner, [State, PID, TransactionsToMine]),
+	put(MinerActorPID, {miner_actor, State, PID, TransactionsToMine}).
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
