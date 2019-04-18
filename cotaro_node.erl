@@ -11,8 +11,8 @@
 % - chain: è una tupla composta da {chain, IdHead, Dictonary}. Il primo campo è un atomo, il secondo è l'ID del blocco che si trova in testa alla catena
 %         (ovvero l'ultimo che è stato inserito) ed infine l'ultimo campo è il dizionario che utilizziamo per memorizzare tutti i blocchi che compongono la nostra catena.
 %         Il dizionario usa come chiavi gli ID dei blocchi e come valori gli oggetti "blocco" corrispondenti.
-% - listOfTransaction: è la lista delle nuove transazioni che riceviamo e che possiamo inserire in un nuovo blocco dopo averlo minato
--record(state, {numberOfNotEnoughFriendRequest, chain, listOfTransaction, updateNotInProgress}).
+% - transactionPool: è la lista delle nuove transazioni che riceviamo e che possiamo inserire in un nuovo blocco dopo averlo minato
+-record(state, {numberOfNotEnoughFriendRequest, chain, transactionPool, currentChainLength}).
 
 %utilizzata per lanciare un nuovo nodo
 launchNode() -> spawn(?MODULE, initializeNode, []).
@@ -25,8 +25,8 @@ initializeNode() ->
     State = #state{
         numberOfNotEnoughFriendRequest = 0,
         chain =  {chain, none, dict:new()},
-        listOfTransaction = [],
-        updateNotInProgress = true
+        transactionPool = [],
+        currentChainLength = 0
     },
     process_flag(trap_exit, true),
     askFriendsToTeacher(),
@@ -129,7 +129,7 @@ loop(MyFriends, State) ->
             %controlliamo se la transazione in questione è già presente nella nostra catena
             TransactionFoundInTheChain = searchTransactionInTheChain(IdTransaction, State#state.chain),
             %controlliamo se la transazione in questione è già presente nella nostra lista delle nuove transazioni che abbiamo già ricevuto
-            TransactionFoundInTheList = searchTransactionInTheList(IdTransaction, State#state.listOfTransaction),
+            TransactionFoundInTheList = searchTransactionInTheList(IdTransaction, State#state.transactionPool),
             TransactionFound = TransactionFoundInTheChain or TransactionFoundInTheList,
                 case TransactionFound of
                     true ->
@@ -140,8 +140,8 @@ loop(MyFriends, State) ->
                         %se non la conoscevamo, la inseriamo nella lista della transazione da provare ad inserire nei prossimi blocchi
                         %e poi la ritrasmettiamo ai nostri amici
                         io:format("~p receive a new transaction with ID ~w~n", [self(), IdTransaction]),
-                        NewListOfTransaction = State#state.listOfTransaction ++ [Transaction],
-                        NewState = State#state{listOfTransaction = NewListOfTransaction},
+                        NewTransactionPool = State#state.transactionPool ++ [Transaction],
+                        NewState = State#state{transactionPool = NewTransactionPool},
                         sendToAllFriend(MyFriends, {push, Transaction}),
                         loop(MyFriends, NewState)
                 end;
@@ -153,27 +153,22 @@ loop(MyFriends, State) ->
             launchPreviousActor(Sender, Nonce, State#state.chain, IDPreviousBlock);
 
         {update, Sender, Block} ->
-            spawn_link(?MODULE, handleUpdate, [self(), Sender, Block, State#state.chain, MyFriends]);
+            launchUpdateActor(self(), Sender, MyFriends, Block, State#state.chain, State#state.currentChainLength);
 
         {update_response, UpdateResponse} ->
-            case State#state.updateNotInProgress of
-                true ->
-                    spawn_link(?MODULE, computeLongestChain, [self(), State#state.listOfTransaction, State#state.chain, UpdateResponse]),
-                    NewState = State#state{updateNotInProgress = false},
-                    loop(MyFriends, NewState);
-                false ->
-                    self() ! {update_response, UpdateResponse}
-            end;
-
-        {longest_result, Result} ->
-            case Result of
-                {changes_required, NewChain, NewTransactionPool} -> 
-                    NewState = State#state{
-                        chain = NewChain,
-                        listOfTransaction = NewTransactionPool,
-                        updateNotInProgress = true
-                    },
-                    loop(MyFriends, NewState)
+            CurrentChainLength = State#state.currentChainLength,
+            CurrentTransactionPool = State#state.transactionPool,
+            case UpdateResponse of
+                {new_chain, NewChain, NewChainLength, TransactionToRemove} ->
+                    case NewChainLength > CurrentChainLength of
+                        true ->
+                            NewState = State#state{
+                                chain = NewChain,
+                                transactionPool = CurrentTransactionPool -- TransactionToRemove,
+                                currentChainLength = NewChainLength
+                            },
+                            loop(MyFriends, NewState)
+                    end
             end;
 
         {'EXIT', ActorDeadPID, Reason} ->
@@ -192,6 +187,8 @@ loop(MyFriends, State) ->
 						{send_previous_actor, A, B, C, D} -> launchPreviousActor(A, B, C, D);
 						{send_head_actor, E, F, G} -> launchGetHeadActor(E, F, G);
 						{miner_actor, IdPreviousBlock, PIDMiner, TransactionsMiner} -> launchMinerActor(IdPreviousBlock, PIDMiner, TransactionsMiner);
+                        {launch_update, Father, Sender, NewBlock} ->
+                            launchUpdateActor(Father, Sender, MyFriends, NewBlock, State#state.chain, State#state.currentChainLength);
                         _ ->
                             %se non so gestire la exit mi suicido
                             exit(Reason)
@@ -202,65 +199,14 @@ loop(MyFriends, State) ->
             loop(MyFriends, State)
     end.
 
-% gestione in seguito ad arrivo update delegata a sotto-attore
-handleUpdate(FatherPID, NewBlockSenderPID, NewBlock, CurrentChain, Friends) ->
-    FatherPID ! updateHandling(NewBlockSenderPID, NewBlock, CurrentChain, Friends).
+% lancia un sotto-attore per gestire un'update ricevuta
+launchUpdateActor(FatherPID, Sender, Friends, NewBlock, CurrentChain, CurrentChainLength) ->
+    UpdateActorPID = spawn_link(?MODULE, handleUpdate, [FatherPID, Sender, Friends, NewBlock, CurrentChain, CurrentChainLength]),
+    put(UpdateActorPID, {launch_update, FatherPID, Sender, NewBlock}).
 
-% comportamento sotto-attore creato dall'attore principale per restituire la catena più lunga 
-% tra quella corrente e quella derivata dal blocco arrivato in seguito all'update;
-% questo sotto-attore invierà al padre un messaggio con atomo 'no_changes_required' in caso
-% in cui la catena corrente rimanga tale, mentre risponde 'changes_required' nel caso in
-% cui la nuova diventi corrente: in quest'ultimo caso nella risposta il sotto-attore
-% ritorna anche la nuova catena (che diventerà quella corrente) e la nuova pool di transazioni
-% aggiornata in seguito al cambiamento di catena
-computeLongestChain(FatherPID, TransactionPool, CurrentChain, UpdateResponse) ->
-    Response = {longest_result, no_changes_required},
-    case UpdateResponse of
-        % caso nel quale le due catene non abbiano blocchi comuni
-        {no_common_blocks, NewChain} ->
-            case getLongestChain(CurrentChain, NewChain) of
-                false -> 
-                    % nuova catena sta per diventare quella corrente: 
-                    % necessario rimettere nella pool di transazioni, le transazioni inserite in blocchi della 
-                    % catena precedente che non sono presenti nella nuova; oltre a questo bisogna anche rimuovere dalla
-                    % pool di transazioni quelle che sono adesso presenti nella nuova catena
-                    {
-                        {remove_from_transactions, TListToRemove}, 
-                        {add_to_transactions, TListToAdd}
-                    } = getTransactionDifferenceForChains(CurrentChain, NewChain),
-                    NewTransactionPool = listConcat(listRemove(TransactionPool, TListToRemove), TListToAdd),
-                    Response = {longest_result, {changes_required, NewChain, NewTransactionPool}}
-            end;
-        {common_blocks, NewChainDelta, CommonBlockID} ->
-            % caso nel quale le due catene hanno blocchi comuni; confronto realizzato solo sulla catena per
-            % i blocchi distinti di questi
-            {chain, CurrentHeadBlockID, CurrentDictChain} = CurrentChain,
-            PartialCurrentDictDelta = getPartialDictChainFromBlockToBlock(CurrentDictChain, CurrentHeadBlockID, CommonBlockID, dict:new()),
-            case getLongestChain(PartialCurrentDictDelta, NewChainDelta) of
-                false ->
-                    % anche in questo caso nuova catena sta per diventare corrente e deve essere aggiornata la pool di
-                    % transazioni come sopra
-                    {
-                        {remove_from_transactions, TListToRemove}, 
-                        {add_to_transactions, TListToAdd}
-                    } = getTransactionDifferenceForChains(PartialCurrentDictDelta, NewChainDelta),
-                    NewTransactionPool = listConcat(listRemove(TransactionPool, TListToRemove), TListToAdd),
-                    {chain, NewHeadBlockID, _} = NewChainDelta,
-                    ChainsCommonSubChain = getPartialDictChainFromBlockToBlock(CurrentDictChain, CommonBlockID, none, dict:new()),
-                    % ritornata catena intera (non solo blocchi distinti considerati per il confronto)
-                    NewChain = {
-                        chain,
-                        NewHeadBlockID,
-                        dict:merge(
-                            fun(K, V1, V2) -> V1 end, 
-                            NewChainDelta, 
-                            ChainsCommonSubChain
-                        )
-                    },
-                    Response = {longest_result, {changes_required, NewChain, NewTransactionPool}}
-            end
-    end,
-    FatherPID ! Response.
+% gestione in seguito ad arrivo update delegata a sotto-attore
+handleUpdate(FatherPID, NewBlockSenderPID, Friends, NewBlock, CurrentChain, CurrentChainLength) ->
+    FatherPID ! updateHandling(NewBlockSenderPID, Friends, NewBlock, CurrentChain, CurrentChainLength).
 
 %% se non abbiamo il precedente (Id pari all'atomo none), allora non inviamo il messaggio.
 %% in caso contrario, inviamo le informazioni del blocco richiesto
@@ -447,31 +393,71 @@ getPartialDictChainFromBlockToBlock(OriginalDictChain, BlockID, EndingBlockID, P
             getPartialDictChainFromBlockToBlock(OriginalDictChain, PreviousBlockID, EndingBlockID, PartialDictChain)
     end.
 
-% restituisce la catena risultante dal blocco ricevuto in fase di update;
+% scandisce la catena (dizionario) per ottenere le transazioni
+scanChainForTransactionList(DictChain, BlockID, List) ->
+    case dict:find(BlockID, DictChain) of
+        error -> List;
+        {ok, Block} -> 
+            {_, PreviousBlockID, TransactionList, _} = Block,
+            scanChainForTransactionList(DictChain, PreviousBlockID, List ++ TransactionList)
+    end.
+
+% ritorna la lista complessiva di transazioni per la catena considerata
+getChainTransactions(Chain) ->
+    {chain, HeadID, DictChain} = Chain,
+    scanChainForTransactionList(DictChain, HeadID, []).
+
+% ritorna la lunghezza della catena (dizionario) considerato
+getDictChainLength(DictChain) ->
+    length(dict:fetch_keys(DictChain)).
+
+% restituisce la catena risultante dal blocco ricevuto in fase di update, lunghezza per questa e il pool di transazioni
+% da rimuovere nel caso in cui essa diventi la nuova catena;
 % 'NewBlockID' e 'NewDictChain' mantengono durante le chiamate ricorsive l'ID del blocco originale ricevuto in
 % seguito all'update e il dizionario (che viene aggiornato durante le chiamate) con il quale si costruisce la
 % catena derivata da quest'ultimo
-getResultingChainFromUpdate(SenderPID, CurrentChain, Block, NewBlockID, NewDictChain) ->
+getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, CurrentChainLength, Block, NewBlockID, NewDictChain) ->
     {chain, CurrentHeadBlockID, CurrentDictChain} = CurrentChain,
     {BlockID, PreviousBlockID, _, _} = Block,
     NewDictChain = dict:append(BlockID, Block, NewDictChain),
     case PreviousBlockID =:= none of
         true ->
             % caso in cui non vi siano nodi comuni tra la catena derivata dal blocco ricevuto e quella corrente
-            {update_response, {no_common_blocks, {chain, NewBlockID, NewDictChain}}};
+            NewChain = {chain, NewBlockID, NewDictChain},
+            {update_response, {new_chain, NewChain, getDictChainLength(NewDictChain), getChainTransactions(NewChain)}};
         false -> case dict:find(PreviousBlockID, CurrentDictChain) of
             {ok, Value} ->
                 % caso in cui ci sia un nodo comune tra la catena derivata dal blocco ricevuto e quella corrente;
-                % queste dovrebbero avere una sotto-catena comune, viene ritornata la catena senza questa parte
-                % comune
+                % queste dovrebbero avere una sotto-catena comune che può essere sfruttata per il calcolo
+                % della lunghezza in maniera maggiormente efficiente
                 PartialNewDictDelta = NewDictChain,
-                {update_response, {common_blocks, {chain, NewBlockID, PartialNewDictDelta}}, PreviousBlockID};
+                ChainsCommonSubChain = getPartialDictChainFromBlockToBlock(CurrentDictChain, PreviousBlockID, none, dict:new()),
+                NewChain = {
+                    chain,
+                    NewBlockID,
+                    dict:merge(
+                        fun(K, V1, V2) -> V1 end, 
+                        PartialNewDictDelta, 
+                        ChainsCommonSubChain
+                    )
+                },
+                {update_response, {
+                    new_chain,
+                    NewChain, 
+                    % per calcolare la lunghezza della nuova catena aggiungo la lunghezza della catena fino al nodo comune
+                    % con quella corrente alla lunghezza totale della catena corrente alla quale viene sottratto il numero
+                    % di blocchi che non sono considerati nella nuova
+                    getDictChainLength(PartialNewDictDelta)
+                        +CurrentChainLength
+                        -getDictChainLength(getPartialDictChainFromBlockToBlock(CurrentDictChain, CurrentHeadBlockID, PreviousBlockID, dict:new())),
+                    getChainTransactions(NewChain)
+                }};
             error ->
                 % nel caso in cui non si sia arrivati alla conclusione o ad un blocco comune con quella corrente per
                 % la catena derivata dal blocco ricevuto, è necessario continuare a richiedere i blocchi precedenti
                 % al fine di costruire quest'ultima
                 Nonce = make_ref(),
-                SenderPID ! {get_previous, SenderPID, Nonce, PreviousBlockID},
+                [A ! {get_previous, self(), Nonce, PreviousBlockID} || A <- [SenderPID] ++ Friends],
                 receive
                     {previous, Nonce, PreviousBlock} ->
                         {ReceivedPreviousBlockID, _, _, _} = PreviousBlock,
@@ -479,7 +465,9 @@ getResultingChainFromUpdate(SenderPID, CurrentChain, Block, NewBlockID, NewDictC
                         case ReceivedPreviousBlockID =/= none of
                                 true -> getResultingChainFromUpdate(
                                         SenderPID,
+                                        Friends,
                                         CurrentChain,
+                                        CurrentChainLength,
                                         PreviousBlock,
                                         NewBlockID,
                                         NewDictChain
@@ -487,14 +475,14 @@ getResultingChainFromUpdate(SenderPID, CurrentChain, Block, NewBlockID, NewDictC
                         end
                 after 2000 ->
                     % se previous non arriva entro timeout o nodo a cui l'ho chiesto non lo ha, viene ritornato
-                    % un atomo che indica che la catena non deve essere considerata
+                    % un atomo che indica che la nuova catena non deve essere considerata
                     {update_response, discharged_chain}
                 end
         end
     end.
 
 % metodo da richiamare successivamente ad update
-updateHandling(NewBlockSender, NewBlock, CurrentChain, Friends) ->
+updateHandling(NewBlockSender, Friends, NewBlock, CurrentChain, CurrentChainLength) ->
     {NewBlockID, PreviousBlockID, TransactionList, Solution} = NewBlock,
     {chain, Head, CurrentDictChain} = CurrentChain,
     case
@@ -503,73 +491,8 @@ updateHandling(NewBlockSender, NewBlock, CurrentChain, Friends) ->
         false -> CurrentChain;
         true ->
             [F ! {update, NewBlock} || F <- Friends],
-            getResultingChainFromUpdate(NewBlockSender, CurrentChain, NewBlock, NewBlock, dict:new())
+            getResultingChainFromUpdate(NewBlockSender, Friends, CurrentChain, CurrentChainLength, NewBlock, NewBlock, dict:new())
     end.
-
-% concatena la seconda lista alla prima
-listConcat(L, []) -> L;
-listConcat(L, [H|T]) -> listConcat(L ++ [H], T).
-
-% rimuove gli elementi della seconda lista dalla prima
-listRemove(L, []) -> L;
-listRemove(L, [H|T]) -> listConcat(lists:delete(H, L), T).
-
-% scandisce la catena (dizionario) per ottenere le transazioni
-scanChainForTransactionList(DictChain, BlockID, List) ->
-    case dict:find(BlockID, DictChain) of
-        error -> List;
-        {ok, Block} -> 
-            {_, PreviousBlockID, TransactionList, _} = Block,
-            scanChainForTransactionList(DictChain, PreviousBlockID, listConcat(List, TransactionList))
-    end.
-
-% ritorna la lista complessiva di transazioni per la catena considerata
-getChainTransactions(Chain) ->
-    {chain, HeadID, DictChain} = Chain,
-    scanChainForTransactionList(DictChain, HeadID, []).
-
-% predicato vero nel caso in cui la transazione passata non sia nella lista di transazioni 
-% considerata, falso altrimenti
-transactionNotInTransactionList(Transaction, TransactionList) ->
-    {Transaction_ID, _} = Transaction,
-    not lists:member(
-        Transaction_ID,
-        lists:map(fun (Y) -> {Y_ID, _} = Y, Y_ID end, TransactionList)
-    ).
-
-% ritorna la differenza tra due liste di transazioni, in particolare le transazioni di 
-% List1 che non sono presenti in List2
-transactionsDifferenceBetweenLists(List1, List2) ->
-    lists:filter(
-        fun (X) -> 
-            transactionNotInTransactionList(X, List2)
-        end, 
-        List1
-    ).
-
-% ritorna le liste di transazioni che devono essere rimosse e aggiunte rispettivamente
-% dalla pool di transazioni nel qual caso si sostituisca la catena corrente con una nuova
-getTransactionDifferenceForChains(CurrentChain, NewChain) ->
-    CurrentTransactionList = getChainTransactions(CurrentChain),
-    NewTransactionList = getChainTransactions(NewChain),
-    {
-        {
-            remove_from_transactions,
-            transactionsDifferenceBetweenLists(NewTransactionList, CurrentTransactionList)
-        },
-        {
-            add_to_transactions, 
-            transactionsDifferenceBetweenLists(CurrentTransactionList, NewTransactionList)
-        }
-    }.
-
-
-% ritorna la catena più lunga tra le due in input (true se la prima è più lunga, false altrimenti)
-% se la lunghezza è la stessa, viene ritornata la prima
-getLongestChain(Chain1, Chain2) ->
-    {chain, _, DictChain1} = Chain1,
-    {chain, _, DictChain2} = Chain2,
-    length(dict:fetch_keys(DictChain1)) >= length(dict:fetch_keys(DictChain2)).
 
 mine(ID_previousBlock, TransactionList) ->	
     BlockID = make_ref(),
@@ -580,7 +503,7 @@ mine(ID_previousBlock, TransactionList) ->
 %% Nel caso in cui il mining sia avvenuto con successo, manda a PID un messaggio contenente il nuovo stato (quindi la nuova catena).
 miner(IdPreviousBlock, PID, TransactionsToMine) ->	
     register(miner_process, self()),
-    %TransactionsToMine = lists:sublist(State#state.listOfTransaction, 10),
+    %TransactionsToMine = lists:sublist(State#state.transactionPool, 10),
     NewBlock = mine(IdPreviousBlock, TransactionsToMine),
     PID ! {mine_successful, NewBlock}.
 
