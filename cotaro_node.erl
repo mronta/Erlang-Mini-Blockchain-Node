@@ -177,7 +177,7 @@ loop(MyFriends, State) ->
             case Reason of
                 normal ->   nothingToDo;
 				killed -> nothingToDo; %abbiamo appositamente killato l'attore
-                _ ->        
+                _ ->
                     ProcessData = get(ActorDeadPID),
                     case ProcessData of
                         launchTimerToAskFriendToTeacher -> launchTimerToAskFriendToTeacher();
@@ -340,7 +340,7 @@ searchTransactionInTheChainAux(IdTransaction, IdBlock, Chain) ->
     Block = getBlockFromChain(Chain,IdBlock),
     {_, IDPreviousBlock, CurrentTransactionList, _} = Block,
     %predicato che ritorna true se la transazione in input è quella cercata (stesso ID), false altrimenti
-    IsTheSearchedTransaction =  
+    IsTheSearchedTransaction =
         fun(Trans) ->   {CurrentTransID, _} = Trans,
             case CurrentTransID of
                 IdTransaction -> true;
@@ -353,7 +353,7 @@ searchTransactionInTheChainAux(IdTransaction, IdBlock, Chain) ->
     end.
 searchTransactionInTheList(IdTransaction, NewTransactionList) ->
     %predicato che ritorna true se la transazione in input è quella cercata (stesso ID), false altrimenti
-    IsTheSearchedTransaction =  
+    IsTheSearchedTransaction =
         fun(Trans) ->   {CurrentTransID, _} = Trans,
             case CurrentTransID of
                 IdTransaction -> true;
@@ -397,7 +397,7 @@ getPartialDictChainFromBlockToBlock(OriginalDictChain, BlockID, EndingBlockID, P
 scanChainForTransactionList(DictChain, BlockID, List) ->
     case dict:find(BlockID, DictChain) of
         error -> List;
-        {ok, Block} -> 
+        {ok, Block} ->
             {_, PreviousBlockID, TransactionList, _} = Block,
             scanChainForTransactionList(DictChain, PreviousBlockID, List ++ TransactionList)
     end.
@@ -436,14 +436,14 @@ getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, CurrentChainLength
                     chain,
                     NewBlockID,
                     dict:merge(
-                        fun(K, V1, V2) -> V1 end, 
-                        PartialNewDictDelta, 
+                        fun(K, V1, V2) -> V1 end,
+                        PartialNewDictDelta,
                         ChainsCommonSubChain
                     )
                 },
                 {update_response, {
                     new_chain,
-                    NewChain, 
+                    NewChain,
                     % per calcolare la lunghezza della nuova catena aggiungo la lunghezza della catena fino al nodo comune
                     % con quella corrente alla lunghezza totale della catena corrente alla quale viene sottratto il numero
                     % di blocchi che non sono considerati nella nuova
@@ -494,20 +494,20 @@ updateHandling(NewBlockSender, Friends, NewBlock, CurrentChain, CurrentChainLeng
             getResultingChainFromUpdate(NewBlockSender, Friends, CurrentChain, CurrentChainLength, NewBlock, NewBlock, dict:new())
     end.
 
-mine(ID_previousBlock, TransactionList) ->	
+mine(ID_previousBlock, TransactionList) ->
     BlockID = make_ref(),
     Solution = proof_of_work:solve(ID_previousBlock, TransactionList),
     {ID_previousBlock, BlockID, TransactionList, Solution}.
 
 %% registra se stesso con l'atomo miner_process, in modo da essere killato in caso di updateBlock sulle stesse transazioni su cui stiamo minando.
 %% Nel caso in cui il mining sia avvenuto con successo, manda a PID un messaggio contenente il nuovo stato (quindi la nuova catena).
-miner(IdPreviousBlock, PID, TransactionsToMine) ->	
+miner(IdPreviousBlock, PID, TransactionsToMine) ->
     register(miner_process, self()),
     %TransactionsToMine = lists:sublist(State#state.transactionPool, 10),
     NewBlock = mine(IdPreviousBlock, TransactionsToMine),
     PID ! {mine_successful, NewBlock}.
 
-launchMinerActor(IdPreviousBlock, PID, TransactionsToMine) ->		
+launchMinerActor(IdPreviousBlock, PID, TransactionsToMine) ->
     MinerActorPID = spawn_link(?MODULE, miner, [IdPreviousBlock, PID, TransactionsToMine]),
 	put(MinerActorPID, {miner_actor, IdPreviousBlock, PID, TransactionsToMine}).
 
@@ -516,42 +516,27 @@ launchMinerActor(IdPreviousBlock, PID, TransactionsToMine) ->
 test_nodes() ->
     T = spawn(teacher_node, main, []),
 	sleep(1),
-	N1 = launchNode(),
-	N2 = launchNode(),
-	N3 = launchNode(),
-	N4 = launchNode(),
-    N5 = launchNode(),
-    N6 = launchNode(),
-	N7 = launchNode(),
-	N8 = launchNode(),
-	N9 = launchNode(),
-    N10 = launchNode(),
-    sleep(10),
-    N1 ! {push, {1, transazione1}},
-    N2 ! {push, {2, transazione2}},
-    exit(N2, manually_kill),
+    NodeList = launchNNode(10, []),
+    sleep(2),
+    spawn(fun () -> sendTransactions(NodeList, 0) end),
+    sleep(5),
+
+
+    %TODO: manca codice per leggere la catena da un nodo random e vedere come evolve
+
+
+    exit(lists:nth(rand:uniform(length(NodeList)), NodeList), manually_kill),
+    exit(lists:nth(rand:uniform(length(NodeList)), NodeList), kill),
     sleep(3),
-    N3 ! {push, {3, transazione3}},
-    N4 ! {push, {4, transazione4}},
-    N5 ! {push, {5, transazione5}},
-    N4 ! {push, {4, transazione4}},
-    N6 ! {push, {6, transazione6}},
-    exit(N10, kill),
-    sleep(3),
-    N7 ! {push, {7, transazione7}},
-    N8 ! {push, {8, transazione8}},
-    N9 ! {push, {9, transazione9}},
-    N10 ! {push, {10, transazione10}},
-    N1 ! {push, {11, transazione11}},
-    N3 ! {push, {12, transazione12}},
-    N5 ! {push, {13, transazione13}},
-    N7 ! {push, {14, transazione14}},
-    N9 ! {push, {15, transazione15}},
-    N1 ! {push, {16, transazione16}},
-	%sleep(15),
-	%Ref = make_ref(),
-	%M1 ! {get_friends, self(), Ref},
-	%receive
-	%	{friends, Ref, Lista_amici} -> io:fwrite("Amici di M1 ~w~n",[Lista_amici])
-	%end.
     test_launched.
+
+launchNNode(0, NodeList) ->
+    NodeList;
+launchNNode(N, NodeList) ->
+    launchNNode(N-1, NodeList ++ [launchNode()]).
+
+sendTransactions(NodeList, 100) ->
+    nothingToDo;
+sendTransactions(NodeList, I) ->
+    lists:nth(rand:uniform(length(NodeList)), NodeList) ! {push, {make_ref(), list_to_atom("Transazione" ++ integer_to_list(I))}},
+    sendTransactions(NodeList, I+1).
