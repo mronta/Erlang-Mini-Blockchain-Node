@@ -431,7 +431,7 @@ launchTransactionIsInTheChain(Transaction, Chain) ->
     put(TransactionControllerPID, {transcationIsInTheChainController, Transaction}).
 
 
-getHead([]) -> {none, none, [], 0};
+getHead([]) -> none;
 getHead(CurrentChain) ->
 	{chain, IdHead, CurrentDictChain} = CurrentChain,
 	case dict:find(IdHead, CurrentDictChain) of
@@ -439,13 +439,15 @@ getHead(CurrentChain) ->
 		error -> nothingToDo %abbiamo già IdHead come testa, l'errore non si verificherà mai
 	end.
 
-% può essere usata per ottenere il blocco richiesto da messaggio 'get_previous'
-getBlockFromChain(CurrentChain, BlockID) ->
-    {chain, _, CurrentDictChain} = CurrentChain,
+getBlockFromDictChain(CurrentDictChain, BlockID) ->
     case dict:find(BlockID, CurrentDictChain) of
 		{ok, Block} -> Block;
-		error -> {none, none, [], 0}
+		error -> none
 	end.
+
+getBlockFromChain(CurrentChain, BlockID) ->
+    {chain, _, CurrentDictChain} = CurrentChain,
+    getBlockFromDictChain(CurrentDictChain, BlockID).
 
 % restituisce il dizionario (catena) che va da BlockID a EndingBlockID (non incluso)
 % chiamata con 'BlockID' avente l'id della testa della catena
@@ -453,10 +455,13 @@ getPartialDictChainFromBlockToBlock(OriginalDictChain, BlockID, EndingBlockID, P
     case BlockID =:= EndingBlockID of
         true -> PartialDictChain;
         false ->
-            Block = getBlockFromChain(OriginalDictChain, BlockID),
-            PartialDictChain = dict:append(BlockID, Block, PartialDictChain),
-            {_, PreviousBlockID, _, _} = Block,
-            getPartialDictChainFromBlockToBlock(OriginalDictChain, PreviousBlockID, EndingBlockID, PartialDictChain)
+            case getBlockFromDictChain(OriginalDictChain, BlockID) of
+                none -> none;
+                Block ->
+                    NewPartialDictChain = dict:store(BlockID, Block, PartialDictChain),
+                    {_, PreviousBlockID, _, _} = Block,
+                    getPartialDictChainFromBlockToBlock(OriginalDictChain, PreviousBlockID, EndingBlockID, NewPartialDictChain)
+            end
     end.
 
 % scandisce la catena (dizionario) per ottenere le transazioni
@@ -577,6 +582,30 @@ launchMinerActor(IdPreviousBlock, PID, TransactionsToMine) ->
     MinerActorPID = spawn_link(?MODULE, miner, [IdPreviousBlock, PID, TransactionsToMine]),
 	put(MinerActorPID, {miner_actor, IdPreviousBlock, PID, TransactionsToMine}).
 
+% stampa il blocco
+newChainString(OldChainString, Block) ->
+    BlockString = lists:flatten(io_lib:format("~p",[Block])),
+    OldChainString ++ " -> " ++ BlockString.
+
+% scandisce la catena per la stampa, nella chiamata della funzione BlockID contiene l'ID del blocco di partenza
+printDictChain(BlockID, DictChain, StringToPrint) ->
+    case BlockID =:= none of
+        true -> 
+            io:format("~ts\n", [StringToPrint]);
+        false ->
+            case dict:find(BlockID, DictChain) of
+                {ok, Block} -> 
+                    {_, PreviousBlockID, _, _} = Block,
+                    printDictChain(PreviousBlockID, DictChain, newChainString(StringToPrint, Block));
+                error ->
+                    io:format("~ts\n", [StringToPrint])
+	        end
+    end.
+
+% stampa la catena
+printChain(Chain) ->
+    {chain, Head, DictChain} = Chain,
+    printDictChain(Head, DictChain, integer_to_list(Head)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 test_nodes() ->
