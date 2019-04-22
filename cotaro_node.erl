@@ -33,6 +33,7 @@ initializeNode() ->
     loop([], State).
 
 loop(MyFriends, State) ->
+	launchTimerToMine(),
     receive
 
         {ping, Mittente, Nonce} ->
@@ -153,6 +154,14 @@ loop(MyFriends, State) ->
                     loop(MyFriends, NewState)
             end;
 
+		{timer_toMine} -> 
+			TransactionsToMine = lists:sublist(State#state.transactionPool, 10),
+			{chain, IDHead, _} = State#state.chain,
+			launchMinerActor(IDHead, self(), TransactionsToMine);
+
+		{mine_successful, NewBlock} ->
+			nothingToDo; %TODO: definire le operazioni da fare qui
+
 		{get_head, Sender, Nonce} ->
             launchGetHeadActor(Sender, Nonce, State#state.chain);
 
@@ -187,6 +196,8 @@ loop(MyFriends, State) ->
                 _ ->
                     ProcessData = get(ActorDeadPID),
                     case ProcessData of
+						launchTimerToMine ->
+							launchTimerToMine();
                         launchTimerToAskFriendToTeacher ->
                             launchTimerToAskFriendToTeacher();
                         {watcher, PID} ->
@@ -277,6 +288,15 @@ launchTimerToAskFriendToTeacher() ->
     %inseriamo le informazioni sull'attore timer lanciato nel dizionario di processo così che
     %se questo muore per qualche ragione, venga rilanciato
     put(TimerPID, launchTimerToAskFriendToTeacher).
+
+launchTimerToMine() ->
+	Creator = self(),
+	TimerPID = spawn_link(
+		fun() ->
+			sleep(10),
+			Creator ! {timer_toMine}
+		end),
+	put(TimerPID, launchTimerToMine).
 
 
 friendsAsker(MyFriends, LoopPID) ->
