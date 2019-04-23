@@ -178,7 +178,7 @@ loop(MyFriends, State) ->
                     loop(MyFriends, State);
                 false ->
                     loop(MyFriends, NewStateWithUpdatedFlag)
-            end.
+            end;
 			
 		{get_head, Sender, Nonce} ->
             launchGetHeadActor(Sender, Nonce, State#state.chain),
