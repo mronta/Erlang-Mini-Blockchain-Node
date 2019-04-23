@@ -161,11 +161,11 @@ loop(MyFriends, State) ->
 			loop(MyFriends, State);
 
 		{mine_successful, NewBlock} ->
-			%launchAcceptBlockActor(self(), State, NewBlock),
-			loop(MyFriends, acceptBlock(State, NewBlock));
+			launchAcceptBlockActor(self(), State, NewBlock),
+			loop(MyFriends, State);
 
-		%{mine_update, NewState} ->
-		%	loop(MyFriends, NewState);
+		{mine_update, NewState} ->
+			loop(MyFriends, NewState);
 
 		{get_head, Sender, Nonce} ->
             launchGetHeadActor(Sender, Nonce, State#state.chain),
@@ -225,8 +225,8 @@ loop(MyFriends, State) ->
                             launchGetHeadActor(E, F, G);
 						{miner_actor, IdPreviousBlock, PIDMiner, TransactionsMiner} ->
                             launchMinerActor(IdPreviousBlock, PIDMiner, TransactionsMiner);
-						%{launch_acceptBlock, U_PID, _, U_NewBlock} ->
-						%	launchAcceptBlockActor(U_PID, State, U_NewBlock);
+						{launch_acceptBlock, U_PID, _, U_NewBlock} ->
+							launchAcceptBlockActor(U_PID, State, U_NewBlock);
                         {launch_update, Father, Sender, NewBlock} ->
                             launchUpdateActor(Father, Sender, MyFriends, NewBlock, State#state.chain, State#state.currentChainLength);
                         _ ->
@@ -240,7 +240,7 @@ loop(MyFriends, State) ->
     end.
 
 %% modifico lo stato aggiornando la catena, la sua lunghezza e le transazioni ancora da minare; restituisco il nuovo stato
-acceptBlock(OldState, NewBlock) ->
+acceptBlockActor(PID, OldState, NewBlock) ->
 	{_IDPreviousBlock, IDHead, Transactions, _Solution} = NewBlock,
 	{chain, _IdPrevious, DictChain} = OldState#state.chain,
 	NewDictChain = dict:store(IDHead, NewBlock, DictChain),
@@ -248,11 +248,11 @@ acceptBlock(OldState, NewBlock) ->
 	NewTransactionPool = OldState#state.transactionPool -- (Transactions),
 	NewChainLength = OldState#state.currentChainLength + 1,
 	NewState = OldState#state{chain=NewChain, transactionPool=NewTransactionPool, currentChainLength=NewChainLength},
-	NewState.
+	PID ! {mine_update, NewState}.
 
-%launchAcceptBlockActor(PID, OldState, NewBlock) ->
-%	AcceptBlockActorPID = spawn_link(?MODULE, acceptBlockActor, [PID, OldState, NewBlock])
-%	put(AcceptBlockActorPID, {launch_acceptBlock, PID, OldState, NewBlock}).
+launchAcceptBlockActor(PID, OldState, NewBlock) ->
+	AcceptBlockActorPID = spawn_link(?MODULE, acceptBlockActor, [PID, OldState, NewBlock]),
+	put(AcceptBlockActorPID, {launch_acceptBlock, PID, OldState, NewBlock}).
 
 % lancia un sotto-attore per gestire un'update ricevuta
 launchUpdateActor(FatherPID, Sender, Friends, NewBlock, CurrentChain, CurrentChainLength) ->
