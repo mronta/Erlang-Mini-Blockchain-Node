@@ -12,7 +12,7 @@
 %         (ovvero l'ultimo che è stato inserito) ed infine l'ultimo campo è il dizionario che utilizziamo per memorizzare tutti i blocchi che compongono la nostra catena.
 %         Il dizionario usa come chiavi gli ID dei blocchi e come valori gli oggetti "blocco" corrispondenti.
 % - transactionPool: è la lista delle nuove transazioni che riceviamo e che possiamo inserire in un nuovo blocco dopo averlo minato
--record(state, {numberOfNotEnoughFriendRequest, chain, transactionPool, currentChainLength}).
+-record(state, {numberOfNotEnoughFriendRequest, chain, transactionPool, currentChainLength, activeMiner, chainUpdateDuringMining}).
 
 %utilizzata per lanciare un nuovo nodo
 launchNode() -> spawn(?MODULE, initializeNode, []).
@@ -26,14 +26,16 @@ initializeNode() ->
         numberOfNotEnoughFriendRequest = 0,
         chain =  {chain, none, dict:new()},
         transactionPool = [],
-        currentChainLength = 0
+        currentChainLength = 0,
+        activeMiner = false,
+        chainUpdateDuringMining = false
     },
     process_flag(trap_exit, true),
     askFriendsToTeacher(),
     loop([], State).
 
 loop(MyFriends, State) ->
-	launchTimerToMine(),
+	launchTimerToMine(State#state.activeMiner),
     receive
 
         {ping, Mittente, Nonce} ->
@@ -155,18 +157,29 @@ loop(MyFriends, State) ->
             end;
 
 		{timer_toMine} -> 
-			TransactionsToMine = lists:sublist(State#state.transactionPool, 10),
-			{chain, IDHead, _} = State#state.chain,
-			launchMinerActor(IDHead, self(), TransactionsToMine),
-			loop(MyFriends, State);
+            TransactionsToMine = lists:sublist(State#state.transactionPool, 10),
+            {chain, IDHead, _} = State#state.chain,
+            launchMinerActor(IDHead, self(), TransactionsToMine),
+            NewState = State#state{activeMiner = true},
+            loop(MyFriends, NewState);
 
 		{mine_successful, NewBlock} ->
+            NewState = State#state{activeMiner = false},
 			launchAcceptBlockActor(self(), State, NewBlock),
-			loop(MyFriends, State);
-
-		{mine_update, NewState} ->
 			loop(MyFriends, NewState);
 
+		{mine_update, NewState} ->
+            NewStateWithUpdatedFlag = NewState#state{
+                activeMiner = false,
+                chainUpdateDuringMining = false
+            },
+            case State#state.chainUpdateDuringMining of
+                true->
+                    loop(MyFriends, State);
+                false ->
+                    loop(MyFriends, NewStateWithUpdatedFlag)
+            end.
+			
 		{get_head, Sender, Nonce} ->
             launchGetHeadActor(Sender, Nonce, State#state.chain),
 			loop(MyFriends, State);
@@ -189,7 +202,9 @@ loop(MyFriends, State) ->
                             NewState = State#state{
                                 chain = NewChain,
                                 transactionPool = CurrentTransactionPool -- TransactionToRemove,
-                                currentChainLength = NewChainLength
+                                currentChainLength = NewChainLength,
+                                % setto flag per indicare che la catena è stata cambiata durante il mining di un blocco
+                                chainUpdateDuringMining = State#state.activeMiner
                             },
                             loop(MyFriends, NewState)
                     end
@@ -204,8 +219,6 @@ loop(MyFriends, State) ->
                 _ ->
                     ProcessData = get(ActorDeadPID),
                     case ProcessData of
-						launchTimerToMine ->
-							launchTimerToMine();
                         launchTimerToAskFriendToTeacher ->
                             launchTimerToAskFriendToTeacher();
                         {watcher, PID} ->
@@ -224,7 +237,9 @@ loop(MyFriends, State) ->
 						{send_head_actor, E, F, G} ->
                             launchGetHeadActor(E, F, G);
 						{miner_actor, IdPreviousBlock, PIDMiner, TransactionsMiner} ->
-                            launchMinerActor(IdPreviousBlock, PIDMiner, TransactionsMiner);
+                            NewState = State#state{activeMiner = false},
+                            erase(ActorDeadPID),
+                            loop(MyFriends, NewState);
 						{launch_acceptBlock, U_PID, _, U_NewBlock} ->
 							launchAcceptBlockActor(U_PID, State, U_NewBlock);
                         {launch_update, Father, Sender, NewBlock} ->
@@ -283,9 +298,7 @@ launchGetHeadActor(Sender, Nonce, CurrentChain) ->
     SendHeadPID = spawn_link(?MODULE, sendHeadActor, [Sender, Nonce, CurrentChain]),
 	put(SendHeadPID, {send_head_actor, Sender, Nonce, CurrentChain}).
 
-
 sleep(N) -> receive after N*1000 -> ok end.
-
 
 watch(Node, Main) ->
     sleep(10),
@@ -314,15 +327,18 @@ launchTimerToAskFriendToTeacher() ->
     %se questo muore per qualche ragione, venga rilanciato
     put(TimerPID, launchTimerToAskFriendToTeacher).
 
-launchTimerToMine() ->
-	Creator = self(),
-	TimerPID = spawn_link(
-		fun() ->
-			sleep(10),
-			Creator ! {timer_toMine}
-		end),
-	put(TimerPID, launchTimerToMine).
-
+launchTimerToMine(ActiveMiner) ->
+    case ActiveMiner of
+        false ->
+            Creator = self(),
+            TimerPID = spawn_link(
+                fun() ->
+                    sleep(10),
+                    Creator ! {timer_toMine}
+                end);
+        true ->
+            nothingToDo
+    end.
 
 friendsAsker(MyFriends, LoopPID) ->
     %selezioniamo casualmente uno dei nostri amici e gli inviamo una richiesta per ottenere la sua lista di amici
@@ -454,7 +470,6 @@ launchTransactionIsInTheChain(Transaction, Chain) ->
     %inseriamo le informazioni sull'attore transaction controller lanciato nel dizionario di processo così che
     %se questo muore per qualche ragione, venga rilanciato
     put(TransactionControllerPID, {transcationIsInTheChainController, Transaction}).
-
 
 getHead([]) -> none;
 getHead(CurrentChain) ->
