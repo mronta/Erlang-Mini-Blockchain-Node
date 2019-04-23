@@ -157,19 +157,27 @@ loop(MyFriends, State) ->
 		{timer_toMine} -> 
 			TransactionsToMine = lists:sublist(State#state.transactionPool, 10),
 			{chain, IDHead, _} = State#state.chain,
-			launchMinerActor(IDHead, self(), TransactionsToMine);
+			launchMinerActor(IDHead, self(), TransactionsToMine),
+			loop(MyFriends, State);
 
 		{mine_successful, NewBlock} ->
-			nothingToDo; %TODO: definire le operazioni da fare qui
+			%launchAcceptBlockActor(self(), State, NewBlock),
+			loop(MyFriends, acceptBlock(State, NewBlock));
+
+		%{mine_update, NewState} ->
+		%	loop(MyFriends, NewState);
 
 		{get_head, Sender, Nonce} ->
-            launchGetHeadActor(Sender, Nonce, State#state.chain);
+            launchGetHeadActor(Sender, Nonce, State#state.chain),
+			loop(MyFriends, State);
 
 		{get_previous, Sender, Nonce, IDPreviousBlock} ->
-            launchPreviousActor(Sender, Nonce, State#state.chain, IDPreviousBlock);
+            launchPreviousActor(Sender, Nonce, State#state.chain, IDPreviousBlock),
+			loop(MyFriends, State);
 
         {update, Sender, Block} ->
-            launchUpdateActor(self(), Sender, MyFriends, Block, State#state.chain, State#state.currentChainLength);
+            launchUpdateActor(self(), Sender, MyFriends, Block, State#state.chain, State#state.currentChainLength),
+			loop(MyFriends, State);
 
         {update_response, UpdateResponse} ->
             CurrentChainLength = State#state.currentChainLength,
@@ -217,6 +225,8 @@ loop(MyFriends, State) ->
                             launchGetHeadActor(E, F, G);
 						{miner_actor, IdPreviousBlock, PIDMiner, TransactionsMiner} ->
                             launchMinerActor(IdPreviousBlock, PIDMiner, TransactionsMiner);
+						%{launch_acceptBlock, U_PID, _, U_NewBlock} ->
+						%	launchAcceptBlockActor(U_PID, State, U_NewBlock);
                         {launch_update, Father, Sender, NewBlock} ->
                             launchUpdateActor(Father, Sender, MyFriends, NewBlock, State#state.chain, State#state.currentChainLength);
                         _ ->
@@ -228,6 +238,21 @@ loop(MyFriends, State) ->
             erase(ActorDeadPID),
             loop(MyFriends, State)
     end.
+
+%% modifico lo stato aggiornando la catena, la sua lunghezza e le transazioni ancora da minare; restituisco il nuovo stato
+acceptBlock(OldState, NewBlock) ->
+	{_IDPreviousBlock, IDHead, Transactions, _Solution} = NewBlock,
+	{chain, _IdPrevious, DictChain} = OldState#state.chain,
+	NewDictChain = dict:store(IDHead, NewBlock, DictChain),
+	NewChain = {chain, IDHead, NewDictChain},
+	NewTransactionPool = OldState#state.transactionPool -- (Transactions),
+	NewChainLength = OldState#state.currentChainLength + 1,
+	NewState = OldState#state{chain=NewChain, transactionPool=NewTransactionPool, currentChainLength=NewChainLength},
+	NewState.
+
+%launchAcceptBlockActor(PID, OldState, NewBlock) ->
+%	AcceptBlockActorPID = spawn_link(?MODULE, acceptBlockActor, [PID, OldState, NewBlock])
+%	put(AcceptBlockActorPID, {launch_acceptBlock, PID, OldState, NewBlock}).
 
 % lancia un sotto-attore per gestire un'update ricevuta
 launchUpdateActor(FatherPID, Sender, Friends, NewBlock, CurrentChain, CurrentChainLength) ->
