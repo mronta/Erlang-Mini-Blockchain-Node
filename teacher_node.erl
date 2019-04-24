@@ -43,7 +43,6 @@ loop(Nodes) ->
 
 main() ->
   register(teacher_node,self()),
-  %net_adm:global_register(teacher_node,self()),
   global:register_name(teacher_node,self()),
   io:format("teacher_node registered~n"),
   loop([]).
