@@ -5,13 +5,24 @@
 -define(NumberOfFriendsRequired, 3).
 
 %definisce la struttura dello stato di un nodo
-% - numberOfNotEnoughFriendRequest: il nodo si memorizza il numero di richieste di nuovi amici fatte che non gli hanno permesso di tornare al
-%                                   numero di amici richiesto. Quando questo valore raggiunge il numero di amici che abbiamo passiamo a chiedere
-%                                   al nodo professore perchè nessuno dei nostri amici è riuscito ad aiutarci.
-% - chain: è una tupla composta da {chain, IdHead, Dictonary}. Il primo campo è un atomo, il secondo è l'ID del blocco che si trova in testa alla catena
-%         (ovvero l'ultimo che è stato inserito) ed infine l'ultimo campo è il dizionario che utilizziamo per memorizzare tutti i blocchi che compongono la nostra catena.
-%         Il dizionario usa come chiavi gli ID dei blocchi e come valori gli oggetti "blocco" corrispondenti.
-% - transactionPool: è la lista delle nuove transazioni che riceviamo e che possiamo inserire in un nuovo blocco dopo averlo minato
+% - numberOfNotEnoughFriendRequest: 
+%       il nodo si memorizza il numero di richieste di nuovi amici fatte che non gli hanno permesso di tornare al
+%       numero di amici richiesto. Quando questo valore raggiunge il numero di amici che abbiamo passiamo a chiedere
+%       al nodo professore perchè nessuno dei nostri amici è riuscito ad aiutarci.
+% - chain: 
+%       è una tupla composta da {chain, IdHead, Dictonary}. Il primo campo è un atomo, il secondo è l'ID del blocco che si trova in testa alla catena
+%       (ovvero l'ultimo che è stato inserito) ed infine l'ultimo campo è il dizionario che utilizziamo per memorizzare tutti i blocchi che compongono 
+%       la nostra catena. Il dizionario usa come chiavi gli ID dei blocchi e come valori gli oggetti "blocco" corrispondenti.
+% - transactionPool: 
+%       è la lista delle nuove transazioni che riceviamo e che possiamo inserire in un nuovo blocco dopo averlo minato
+% - currentChainLength: 
+%       lunghezza corrente della catena del nodo
+% - activeMiner: 
+%       flag che indica se è attivo correntemente un attore che sta minando un blocco
+% - chainUpdateDuringMining: 
+%       flag che indica se la catena è stata modificata in seguito ad un update mentre un attore sta minando un blocco
+%       utilizzato per scartare il blocco minato quando lo si riceve
+
 -record(state, {numberOfNotEnoughFriendRequest, chain, transactionPool, currentChainLength, activeMiner, chainUpdateDuringMining}).
 
 %utilizzata per lanciare un nuovo nodo
@@ -37,6 +48,8 @@ initializeNode() ->
 loop(MyFriends, State) ->
 	launchTimerToMine(State#state.activeMiner),
     receive
+        {print_chain} ->
+            printChain(State#state.chain);
 
         {ping, Mittente, Nonce} ->
             %io:format("~p has received ping request, sending pong~n", [self()]),
@@ -651,18 +664,13 @@ printChain(Chain) ->
 test_nodes() ->
     T = spawn(teacher_node, main, []),
 	sleep(1),
-    NodeList = launchNNode(10, []),
+    NodeList = launchNNode(4, []),
     sleep(2),
     spawn(fun () -> sendTransactions(NodeList, 0) end),
-    sleep(5),
-
-
-    %TODO: manca codice per leggere la catena da un nodo random e vedere come evolve
-
-
+    sleep(20),
+    [N ! {print_chain} || N <- NodeList],
     %exit(lists:nth(rand:uniform(length(NodeList)), NodeList), manually_kill),
     %exit(lists:nth(rand:uniform(length(NodeList)), NodeList), kill),
-    sleep(3),
     test_launched.
 
 launchNNode(0, NodeList) ->
