@@ -185,26 +185,26 @@ loop(MyFriends, State) ->
 
 		{mine_successful, NewBlock} ->
             NewState = State#state{
-                activeMiner = checkMining(State#state.activeMiner, State#state.transactionPool, State#state.chain)
+                activeMiner = checkMining(false, State#state.transactionPool, State#state.chain)
             },
 			launchAcceptBlockActor(self(), State#state.chain, State#state.transactionPool, State#state.currentChainLength, NewBlock),
 			loop(MyFriends, NewState);
 
-		{mine_update, NewChain, _IDHead, NewTransactionPool, NewChainLength} ->
-			NewState = State#state{
-                chain = NewChain, 
-                transactionPool = NewTransactionPool, 
-                currentChainLength = NewChainLength
-            },
-            NewStateWithUpdatedFlag = NewState#state{
-                activeMiner = false,
+		{mine_update, NewBlock, NewChain, _IDHead, NewTransactionPool, NewChainLength} ->
+            NewState = State#state{
                 chainUpdateDuringMining = false
             },
             case State#state.chainUpdateDuringMining of
                 true->
-                    loop(MyFriends, State);
+                    loop(MyFriends, NewState);
                 false ->
-                    loop(MyFriends, NewStateWithUpdatedFlag)
+                    NewUpdatedState = NewState#state{
+                        chain = NewChain, 
+                        transactionPool = NewTransactionPool, 
+                        currentChainLength = NewChainLength
+                    },
+                    [F ! {update, self(), NewBlock} || F <- MyFriends],
+                    loop(MyFriends, NewUpdatedState)
             end;
 			
 		{get_head, Sender, Nonce} ->
@@ -233,8 +233,12 @@ loop(MyFriends, State) ->
                                 % setto flag per indicare che la catena è stata cambiata durante il mining di un blocco
                                 chainUpdateDuringMining = State#state.activeMiner
                             },
-                            loop(MyFriends, NewState)
-                    end
+                            loop(MyFriends, NewState);
+                        false ->
+                            loop(MyFriends, State)
+                    end;
+                _ -> 
+                    loop(MyFriends, State)
             end;
 
         {'EXIT', ActorDeadPID, Reason} ->
@@ -282,35 +286,35 @@ loop(MyFriends, State) ->
     end.
 
 %% modifico lo stato aggiornando la catena, la sua lunghezza e le transazioni ancora da minare; restituisco il nuovo stato
-acceptBlockActor(PID, DictChain, TransactionPool, CurrentChainLength, NewBlock) ->
+acceptBlockActor(PID, Chain, TransactionPool, CurrentChainLength, NewBlock) ->
 	{IDHead, _IDPreviousBlock, Transactions, _Solution} = NewBlock,
-    {chain, _, OldDict} = DictChain,
-    NewDictChain = dict:store(IDHead, NewBlock, OldDict),
+    {chain, _, DictChain} = Chain,
+    NewDictChain = dict:store(IDHead, NewBlock, DictChain),
 	NewChain = {chain, IDHead, NewDictChain},
 	NewTransactionPool = TransactionPool -- Transactions,
 	NewChainLength = CurrentChainLength + 1,
-	PID ! {mine_update, NewChain, IDHead, NewTransactionPool, NewChainLength}.
+	PID ! {mine_update, NewBlock, NewChain, IDHead, NewTransactionPool, NewChainLength}.
 
-launchAcceptBlockActor(PID, DictChain, TransactionPool, CurrentChainLength, NewBlock) ->
-    AcceptBlockActorPID = spawn_link(fun() -> acceptBlockActor(PID, DictChain, TransactionPool, CurrentChainLength, NewBlock) end),
+launchAcceptBlockActor(PID, Chain, TransactionPool, CurrentChainLength, NewBlock) ->
+    AcceptBlockActorPID = spawn_link(fun() -> acceptBlockActor(PID, Chain, TransactionPool, CurrentChainLength, NewBlock) end),
 	put(AcceptBlockActorPID, {launch_acceptBlock, PID, NewBlock}).
 
 % lancia un sotto-attore per gestire un'update ricevuta
 launchUpdateActor(FatherPID, Sender, Friends, NewBlock, CurrentChain, CurrentChainLength) ->
-UpdateActorPID = spawn_link(fun() -> handleUpdate(FatherPID, Sender, Friends, NewBlock, CurrentChain, CurrentChainLength) end),
+    UpdateActorPID = spawn_link(fun() -> handleUpdate(FatherPID, Sender, Friends, NewBlock, CurrentChain, CurrentChainLength) end),
     put(UpdateActorPID, {launch_update, FatherPID, Sender, NewBlock}).
 
 % gestione in seguito ad arrivo update delegata a sotto-attore
 handleUpdate(FatherPID, NewBlockSenderPID, Friends, NewBlock, CurrentChain, CurrentChainLength) ->
     FatherPID ! updateHandling(NewBlockSenderPID, Friends, NewBlock, CurrentChain, CurrentChainLength).
 
-%% se non abbiamo il precedente (Id pari all'atomo none), allora non inviamo il messaggio.
+%% se non abbiamo il blocco allora non inviamo il messaggio.
 %% in caso contrario, inviamo le informazioni del blocco richiesto
 sendPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
-	{IdPrec, Id, ListTransaction, Solution} = getBlockFromChain(CurrentChain, IdBlock),
-	case Id of
+	SearchedBlock = getBlockFromChain(CurrentChain, IdBlock),
+	case SearchedBlock of
 		none -> nothingToDo;
-		_ -> Sender ! {previous, Nonce, {IdPrec, Id, ListTransaction, Solution}}
+		_ -> Sender ! {previous, Nonce, SearchedBlock}
 	end.
 
 launchPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
@@ -404,14 +408,17 @@ launchFriendsAdder(MyFriends, OtherFriends) ->
 sendMessageWithDisturbance(DestinationPID, Message) ->
     %ogni volta che inviate un messaggio, ci deve essere una probabilità su 10 di non inviarlo e una su 10 di inviarne due copie
     case rand:uniform(10) of
-        0 ->    %non invio il messaggio
-                %io:format("Not send message (~w) to ~p for disturbance ~n", [Message, DestinationPID]),
-                nothingToDo;
-        1 ->    %invio il messaggio 2 volte
-                %io:format("Send message (~w) to ~p 2 times for disturbance ~n", [Message, DestinationPID]),
-                DestinationPID ! Message, DestinationPID ! Message;
-        _ ->    %altrimenti invio il messaggio correttamente una sola volta
-                DestinationPID ! Message
+        0 ->
+            %non invio il messaggio
+            %io:format("Not send message (~w) to ~p for disturbance ~n", [Message, DestinationPID]),
+            nothingToDo;
+        1 ->
+            %invio il messaggio 2 volte
+            %io:format("Send message (~w) to ~p 2 times for disturbance ~n", [Message, DestinationPID]),
+            DestinationPID ! Message, DestinationPID ! Message;
+        _ ->
+            %altrimenti invio il messaggio correttamente una sola volta
+            DestinationPID ! Message
     end.
 sendToAllFriend([], _) -> nothingToDo;
 sendToAllFriend(FriendList, Message) ->
@@ -526,79 +533,81 @@ getDictChainLength(DictChain) ->
 getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, CurrentChainLength, Block, NewBlockID, NewDictChain) ->
     {chain, CurrentHeadBlockID, CurrentDictChain} = CurrentChain,
     {BlockID, PreviousBlockID, _, _} = Block,
-    NewDictChain = dict:append(BlockID, Block, NewDictChain),
+    %io:format("prevblockid: ~p\n", [PreviousBlockID]),
+    NewUpdatedDictChain = dict:store(BlockID, Block, NewDictChain),
     case PreviousBlockID =:= none of
         true ->
             % caso in cui non vi siano nodi comuni tra la catena derivata dal blocco ricevuto e quella corrente
-            NewChain = {chain, NewBlockID, NewDictChain},
-            {update_response, {new_chain, NewChain, getDictChainLength(NewDictChain), getChainTransactions(NewChain)}};
-        false -> case dict:find(PreviousBlockID, CurrentDictChain) of
-            {ok, _} ->
-                % caso in cui ci sia un nodo comune tra la catena derivata dal blocco ricevuto e quella corrente;
-                % queste dovrebbero avere una sotto-catena comune che può essere sfruttata per il calcolo
-                % della lunghezza in maniera maggiormente efficiente
-                PartialNewDictDelta = NewDictChain,
-                ChainsCommonSubChain = getPartialDictChainFromBlockToBlock(CurrentDictChain, PreviousBlockID, none, dict:new()),
-                NewChain = {
-                    chain,
-                    NewBlockID,
-                    dict:merge(
-                        fun(_K, V1, _V2) -> V1 end,
-                        PartialNewDictDelta,
-                        ChainsCommonSubChain
-                    )
-                },
-                {update_response, {
-                    new_chain,
-                    NewChain,
-                    % per calcolare la lunghezza della nuova catena aggiungo la lunghezza della catena fino al nodo comune
-                    % con quella corrente alla lunghezza totale della catena corrente alla quale viene sottratto il numero
-                    % di blocchi che non sono considerati nella nuova
-                    getDictChainLength(PartialNewDictDelta)
-                        +CurrentChainLength
-                        -getDictChainLength(getPartialDictChainFromBlockToBlock(CurrentDictChain, CurrentHeadBlockID, PreviousBlockID, dict:new())),
-                    getChainTransactions(NewChain)
-                }};
-            error ->
-                % nel caso in cui non si sia arrivati alla conclusione o ad un blocco comune con quella corrente per
-                % la catena derivata dal blocco ricevuto, è necessario continuare a richiedere i blocchi precedenti
-                % al fine di costruire quest'ultima
-                Nonce = make_ref(),
-                [A ! {get_previous, self(), Nonce, PreviousBlockID} || A <- [SenderPID] ++ Friends],
-                receive
-                    {previous, Nonce, PreviousBlock} ->
-                        {ReceivedPreviousBlockID, _, _, _} = PreviousBlock,
-                        % se ReceivedPreviousBlockID == none, non catturato e gestito in after
-                        case ReceivedPreviousBlockID =/= none of
-                                true -> getResultingChainFromUpdate(
-                                        SenderPID,
-                                        Friends,
-                                        CurrentChain,
-                                        CurrentChainLength,
-                                        PreviousBlock,
-                                        NewBlockID,
-                                        NewDictChain
-                                    )
-                        end
-                after 2000 ->
-                    % se previous non arriva entro timeout o nodo a cui l'ho chiesto non lo ha, viene ritornato
-                    % un atomo che indica che la nuova catena non deve essere considerata
-                    {update_response, discharged_chain}
-                end
+            NewChain = {chain, NewBlockID, NewUpdatedDictChain},
+            {update_response, {new_chain, NewChain, getDictChainLength(NewUpdatedDictChain), getChainTransactions(NewChain)}};
+        false ->
+            case dict:find(PreviousBlockID, CurrentDictChain) of
+                {ok, _} ->
+                    % caso in cui ci sia un nodo comune tra la catena derivata dal blocco ricevuto e quella corrente;
+                    % queste dovrebbero avere una sotto-catena comune che può essere sfruttata per il calcolo
+                    % della lunghezza in maniera maggiormente efficiente
+                    PartialNewDictDelta = NewUpdatedDictChain,
+                    ChainsCommonSubChain = getPartialDictChainFromBlockToBlock(CurrentDictChain, PreviousBlockID, none, dict:new()),
+                    NewChain = {
+                        chain,
+                        NewBlockID,
+                        dict:merge(
+                            fun(_K, V1, _V2) -> V1 end,
+                            PartialNewDictDelta,
+                            ChainsCommonSubChain
+                        )
+                    },
+                    {update_response, {
+                        new_chain,
+                        NewChain,
+                        % per calcolare la lunghezza della nuova catena aggiungo la lunghezza della catena fino al nodo comune
+                        % con quella corrente alla lunghezza totale della catena corrente alla quale viene sottratto il numero
+                        % di blocchi che non sono considerati nella nuova
+                        getDictChainLength(PartialNewDictDelta)
+                            +CurrentChainLength
+                            -getDictChainLength(getPartialDictChainFromBlockToBlock(CurrentDictChain, CurrentHeadBlockID, PreviousBlockID, dict:new())),
+                        getChainTransactions(NewChain)
+                    }};
+                error ->
+                    % nel caso in cui non si sia arrivati alla conclusione o ad un blocco comune con quella corrente per
+                    % la catena derivata dal blocco ricevuto, è necessario continuare a richiedere i blocchi precedenti
+                    % al fine di costruire quest'ultima
+                    Nonce = make_ref(),
+                    [A ! {get_previous, self(), Nonce, PreviousBlockID} || A <- [SenderPID] ++ Friends],
+                    %io:format("block: ~p\n", [Block]),
+                    %io:format("prevblockid: ~p\n", [PreviousBlockID]),
+                    receive
+                        {previous, Nonce, PreviousBlock} ->
+                            % ricevo il messaggio contenente il blocco precedente richiesto
+                            getResultingChainFromUpdate(
+                                SenderPID,
+                                Friends,
+                                CurrentChain,
+                                CurrentChainLength,
+                                PreviousBlock,
+                                NewBlockID,
+                                NewUpdatedDictChain
+                            )
+                    after 2000 ->
+                        % se previous non arriva entro timeout o nodo a cui l'ho chiesto non lo ha, viene ritornato
+                        % un atomo che indica che la nuova catena non deve essere considerata
+                        {update_response, discarded_chain}
+                    end
         end
     end.
 
 % metodo da richiamare successivamente ad update
 updateHandling(NewBlockSender, Friends, NewBlock, CurrentChain, CurrentChainLength) ->
-    {NewBlockID, _, TransactionList, Solution} = NewBlock,
+    {NewBlockID, NewPreviousBlockID, TransactionList, Solution} = NewBlock,
     {chain, _, CurrentDictChain} = CurrentChain,
     case
-        proof_of_work:check({NewBlockID, TransactionList}, Solution) and (dict:find(NewBlockID, CurrentDictChain) =:= error)
+        proof_of_work:check({NewPreviousBlockID, TransactionList}, Solution) and (dict:find(NewBlockID, CurrentDictChain) =:= error)
     of
-        false -> CurrentChain;
+        false ->     
+            CurrentChain;
         true ->
-            [F ! {update, NewBlock} || F <- Friends],
-            getResultingChainFromUpdate(NewBlockSender, Friends, CurrentChain, CurrentChainLength, NewBlock, NewBlock, dict:new())
+            [F ! {update, NewBlockSender, NewBlock} || F <- Friends],
+            getResultingChainFromUpdate(NewBlockSender, Friends, CurrentChain, CurrentChainLength, NewBlock, NewBlockID, dict:new())
     end.
 
 mine(ID_previousBlock, TransactionList) ->
@@ -638,16 +647,16 @@ newChainString(OldChainString, Block) ->
 
 % scandisce la catena per la stampa, nella chiamata della funzione BlockID contiene l'ID del blocco di partenza
 printDictChain(BlockID, DictChain, StringToPrint) ->
-    if
-        BlockID =:= none -> 
-            io:format("Chain: ~ts\n", [StringToPrint]);
+    case (BlockID =:= none) or (getDictChainLength(DictChain) =:= 0) of
         true ->
+            io:format("Chain: ~ts\n", [StringToPrint]);
+        false ->
             case dict:find(BlockID, DictChain) of
                 {ok, Block} -> 
                     {_, PreviousBlockID, _, _} = Block,
                     printDictChain(PreviousBlockID, DictChain, newChainString(StringToPrint, Block));
                 error ->
-                    io:format("Non dovrebbe succedere: ~ts\n", [StringToPrint])
+                    io:format("Something wrong in chain: ~ts\n", [StringToPrint])
 	        end
     end.
 
@@ -663,7 +672,7 @@ test_nodes() ->
     NodeList = launchNNode(4, []),
     sleep(2),
     spawn(fun () -> sendTransactions(NodeList, 0) end),
-    sleep(60),
+    sleep(20),
     [N ! {print_chain} || N <- NodeList],
     %exit(lists:nth(rand:uniform(length(NodeList)), NodeList), manually_kill),
     %exit(lists:nth(rand:uniform(length(NodeList)), NodeList), kill),
