@@ -176,13 +176,6 @@ loop(MyFriends, State) ->
             NewState = State#state{activeMiner = true},
             loop(MyFriends, NewState);
 
-		%{timer_toMine} -> 
-        %    TransactionsToMine = lists:sublist(State#state.transactionPool, 10),
-        %    {chain, IDHead, _} = State#state.chain,
-        %    launchMinerActor(IDHead, self(), TransactionsToMine),
-        %    NewState = State#state{activeMiner = true},
-        %    loop(MyFriends, NewState);
-
 		{mine_successful, NewBlock} ->
             NewState = State#state{
                 activeMiner = checkMining(false, State#state.transactionPool, State#state.chain)
@@ -404,7 +397,6 @@ launchFriendsAdder(MyFriends, OtherFriends) ->
     %se questo muore per qualche ragione, venga rilanciato
     put(FriendsAdderPID, {friendsAdder, OtherFriends}).
 
-
 sendMessageWithDisturbance(DestinationPID, Message) ->
     %ogni volta che inviate un messaggio, ci deve essere una probabilità su 10 di non inviarlo e una su 10 di inviarne due copie
     case rand:uniform(10) of
@@ -533,7 +525,6 @@ getDictChainLength(DictChain) ->
 getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, CurrentChainLength, Block, NewBlockID, NewDictChain) ->
     {chain, CurrentHeadBlockID, CurrentDictChain} = CurrentChain,
     {BlockID, PreviousBlockID, _, _} = Block,
-    %io:format("prevblockid: ~p\n", [PreviousBlockID]),
     NewUpdatedDictChain = dict:store(BlockID, Block, NewDictChain),
     case PreviousBlockID =:= none of
         true ->
@@ -565,7 +556,14 @@ getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, CurrentChainLength
                         % di blocchi che non sono considerati nella nuova
                         getDictChainLength(PartialNewDictDelta)
                             +CurrentChainLength
-                            -getDictChainLength(getPartialDictChainFromBlockToBlock(CurrentDictChain, CurrentHeadBlockID, PreviousBlockID, dict:new())),
+                            -getDictChainLength(
+                                getPartialDictChainFromBlockToBlock(
+                                    CurrentDictChain, 
+                                    CurrentHeadBlockID, 
+                                    PreviousBlockID, 
+                                    dict:new()
+                                )
+                            ),
                         getChainTransactions(NewChain)
                     }};
                 error ->
@@ -604,7 +602,7 @@ updateHandling(NewBlockSender, Friends, NewBlock, CurrentChain, CurrentChainLeng
         proof_of_work:check({NewPreviousBlockID, TransactionList}, Solution) and (dict:find(NewBlockID, CurrentDictChain) =:= error)
     of
         false ->     
-            CurrentChain;
+            {update_response, discarded_chain};
         true ->
             [F ! {update, NewBlockSender, NewBlock} || F <- Friends],
             getResultingChainFromUpdate(NewBlockSender, Friends, CurrentChain, CurrentChainLength, NewBlock, NewBlockID, dict:new())
