@@ -83,7 +83,6 @@ loop(MyFriends, State) ->
             PreviousNumberOfNotEnoughFriendRequest = State#state.numberOfNotEnoughFriendRequest,
             %selezioniamo solo i nuovi possibili amici rimuovendo noi stessi e nodi che già conosciamo
             NewFriends = OtherFriends -- (MyFriends ++ [self()]),
-            %io:format("~p receive friend list, possible new friends = ~w~n", [self(), NewFriends]),
             case NewFriends of
                 [] ->
                     %non riusciamo ad aggiungere amici
@@ -141,7 +140,6 @@ loop(MyFriends, State) ->
 
         {get_friends, Sender, Nonce} ->
             %ci arriva una richiesta di trasmissione dei nostri amici, quindi inviamo la nostra lista al mittente
-            %io:format("~p send friend list to ~p ~n", [self(), Sender]),
             Sender ! {friends, Nonce, MyFriends},
             loop(MyFriends, State);
 
@@ -391,7 +389,6 @@ addFriends(MyFriends, OtherFriends, LoopPID) ->
     case length(MyFriends) < ?NumberOfFriendsRequired of
         true ->
             NewFriend = lists:nth(rand:uniform(length(OtherFriends)), OtherFriends),
-            %io:format("~p add a new friend ~p~n",[self(), NewFriend]),
             launchWatcher(NewFriend, LoopPID),
             addFriends( MyFriends ++ [NewFriend], OtherFriends -- [NewFriend], LoopPID);
         false ->
