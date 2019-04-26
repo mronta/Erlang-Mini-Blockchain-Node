@@ -204,9 +204,13 @@ loop(MyFriends, State) ->
             UpdateInAnalysis = State#state.updateInAnalysis,
             case lists:member(BlockID, UpdateInAnalysis) of 
                 true -> 
+                    % l'update per il blocco ricevuto è già in corso e non deve esserne instanziata 
+                    % una ulteriore gestione per esso
                     nothingToDo,
                     loop(MyFriends, State);
                 false -> 
+                    % non vi è nessuna update in corso per il blocco ricevuto, viene quindi instanziato 
+                    % un sotto-attore per gestirla
                     NewState = State#state{updateInAnalysis = UpdateInAnalysis ++ [BlockID]},
                     launchUpdateActor(self(), Sender, MyFriends, Block, State#state.chain),
                     loop(MyFriends, NewState)
@@ -218,6 +222,9 @@ loop(MyFriends, State) ->
             UpdateInAnalysis = State#state.updateInAnalysis,
             case UpdateResponse of
                 {new_chain, NewChain, NewChainLength, TransactionToRemove, UpdateBlockID} ->
+                    % ricevuta la catena risultante dall'operazione di update in seguito alla ricezione
+                    % di un blocco; nel caso in cui questa sia più lunga di quella corrente, quest'ultima
+                    % viene sostituita con la prima
                     NewState = State#state{updateInAnalysis = UpdateInAnalysis -- [UpdateBlockID]},
                     case NewChainLength > CurrentChainLength of
                         true ->
@@ -232,6 +239,10 @@ loop(MyFriends, State) ->
                             loop(MyFriends, NewState)
                     end;
                 {discarded_chain, UpdateBlockID} ->
+                    % catena risultante in seguito alla ricezione di un blocco da non considerare:
+                    % il blocco è scorretto o è già contenuto nella catena corrente, oppure 
+                    % partendo dal nuovo blocco non si è riusciti a ricostruire la catena risultante
+                    % completa
                     NewState = State#state{updateInAnalysis = UpdateInAnalysis -- [UpdateBlockID]}, 
                     loop(MyFriends, NewState)
             end;
@@ -286,9 +297,10 @@ loop(MyFriends, State) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%General Function%
+%GENERAL FUNCTIONS%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 sleep(N) -> receive after N*1000 -> ok end.
 
 sendMessageWithDisturbance(DestinationPID, Message) ->
@@ -335,9 +347,10 @@ getBlockFromChain(CurrentChain, BlockID) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%Topology Function%
+%TOPOLOGY FUNCTIONS%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 watch(Node, Main) ->
     sleep(10),
     Ref = make_ref(),
@@ -413,9 +426,10 @@ launchFriendsAdder(MyFriends, OtherFriends) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%Push Function%
+%PUSH FUNCTIONS%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 %la searchTransactionInTheChainAux solleva un'eccezione 'found' nel momento in cui trova in un blocco della catena la transazione cercata
 searchTransactionInTheChainAux(_, none, _) -> false ;
 searchTransactionInTheChainAux(IdTransaction, IdBlock, Chain) ->
@@ -462,9 +476,10 @@ launchTransactionIsInTheChain(Transaction, Chain) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%Head/Previuos Function%
+%HEAD/PREVIOUS FUNCTIONS%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 sendHeadActor(Sender, Nonce, CurrentChain) ->
 	Sender ! {head, Nonce, getHead(CurrentChain)}.
 
@@ -487,9 +502,10 @@ launchPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%Mine Function%
+%MINE FUNCTIONS%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 mine(ID_previousBlock, TransactionList) ->
     BlockID = make_ref(),
     Solution = proof_of_work:solve({ID_previousBlock, TransactionList}),
@@ -532,19 +548,11 @@ launchAcceptBlockActor(PID, Chain, TransactionPool, CurrentChainLength, NewBlock
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%Update Function%
+%UPDATE FUNCTIONS%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-% gestione in seguito ad arrivo update delegata a sotto-attore
-handleUpdate(FatherPID, NewBlockSenderPID, Friends, NewBlock, CurrentChain) ->
-    FatherPID ! updateHandling(NewBlockSenderPID, Friends, NewBlock, CurrentChain).
-% lancia un sotto-attore per gestire un'update ricevuta
-launchUpdateActor(FatherPID, Sender, Friends, NewBlock, CurrentChain) ->
-    UpdateActorPID = spawn_link(fun() -> handleUpdate(FatherPID, Sender, Friends, NewBlock, CurrentChain) end),
-    put(UpdateActorPID, {launch_update, FatherPID, Sender, NewBlock}).
 
 % restituisce il dizionario (catena) che va da BlockID a EndingBlockID (non incluso)
-% chiamata con 'BlockID' avente l'id della testa della catena
 getPartialDictChainFromBlockToBlock(OriginalDictChain, BlockID, EndingBlockID, PartialDictChain) ->
     case BlockID =:= EndingBlockID of
         true -> PartialDictChain;
@@ -558,7 +566,7 @@ getPartialDictChainFromBlockToBlock(OriginalDictChain, BlockID, EndingBlockID, P
             end
     end.
 
-% scandisce la catena (dizionario) per ottenere le transazioni
+% scandisce la catena (dizionario) per ottenere la lista di transazioni
 scanChainForTransactionList(DictChain, BlockID, List) ->
     case dict:find(BlockID, DictChain) of
         error -> List;
@@ -577,8 +585,8 @@ getChainTransactions(Chain) ->
 getDictChainLength(DictChain) ->
     length(dict:fetch_keys(DictChain)).
 
-% restituisce la catena risultante dal blocco ricevuto in fase di update, lunghezza per questa e il pool di transazioni
-% da rimuovere nel caso in cui essa diventi la nuova catena;
+% restituisce la catena risultante dal blocco ricevuto in fase di update, la lunghezza per questa e il pool di 
+% transazioni da rimuovere nel caso in cui essa diventi la nuova catena;
 % 'NewBlockID' e 'NewDictChain' mantengono durante le chiamate ricorsive l'ID del blocco originale ricevuto in
 % seguito all'update e il dizionario (che viene aggiornato durante le chiamate) con il quale si costruisce la
 % catena derivata da quest'ultimo
@@ -588,15 +596,17 @@ getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, Block, NewBlockID,
     NewUpdatedDictChain = dict:store(BlockID, Block, NewDictChain),
     case PreviousBlockID =:= none of
         true ->
-            % caso in cui non vi siano nodi comuni tra la catena derivata dal blocco ricevuto e quella corrente
+            % non vi siano nodi comuni tra la catena ricostruita dal blocco ricevuto e quella corrente;
+            % viene restituita la catena per il blocco ricevuto in seguito all'update
             NewChain = {chain, NewBlockID, NewUpdatedDictChain},
             {update_response, {new_chain, NewChain, getDictChainLength(NewUpdatedDictChain), getChainTransactions(NewChain), NewBlockID}};
         false ->
             case dict:find(PreviousBlockID, CurrentDictChain) of
                 {ok, _} ->
-                    % caso in cui ci sia un nodo comune tra la catena derivata dal blocco ricevuto e quella corrente;
-                    % queste dovrebbero avere una sotto-catena comune che può essere sfruttata per il calcolo
-                    % della lunghezza in maniera maggiormente efficiente
+                    % vi è un nodo comune tra la catena derivata dal blocco ricevuto e quella corrente;
+                    % queste dovrebbero avere una sotto-catena comune che può essere sfruttata per completare
+                    % la ricostruzione della prima senza richiedere i blocchi precedenti ad altri nodi;
+                    % viene restituita la catena per il blocco ricevuto in seguito all'update
                     PartialNewDictDelta = NewUpdatedDictChain,
                     ChainsCommonSubChain = getPartialDictChainFromBlockToBlock(CurrentDictChain, PreviousBlockID, none, dict:new()),
                     NewDictChainMerged = dict:merge(
@@ -617,16 +627,14 @@ getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, Block, NewBlockID,
                         NewBlockID
                     }};
                 error ->
-                    % nel caso in cui non si sia arrivati alla conclusione o ad un blocco comune con quella corrente per
-                    % la catena derivata dal blocco ricevuto, è necessario continuare a richiedere i blocchi precedenti
-                    % al fine di costruire quest'ultima
+                    % non si è arrivati alla conclusione della ricostruzione della catena o ad un blocco comune con 
+                    % quella corrente; è quindi necessario richiedere il blocco precedente sconosciuto ad altri nodi
+                    % (mittente dell'update e amici) al fine di ricostruire la catena
                     Nonce = make_ref(),
                     [A ! {get_previous, self(), Nonce, PreviousBlockID} || A <- [SenderPID] ++ Friends],
-                    %io:format("block: ~p\n", [Block]),
-                    %io:format("prevblockid: ~p\n", [PreviousBlockID]),
                     receive
                         {previous, Nonce, PreviousBlock} ->
-                            % ricevo il messaggio contenente il blocco precedente richiesto
+                            % gestione della ricezione del messaggio contenente il blocco precedente richiesto
                             getResultingChainFromUpdate(
                                 SenderPID,
                                 Friends,
@@ -636,32 +644,49 @@ getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, Block, NewBlockID,
                                 NewUpdatedDictChain
                             )
                     after 2000 ->
-                        % se previous non arriva entro timeout o nodo a cui l'ho chiesto non lo ha, viene ritornato
-                        % un atomo che indica che la nuova catena non deve essere considerata
+                        % se messaggio previous non arriva entro timeout (nodi a cui si è chiesto potrebbero non essere 
+                        % riusciti a rispondere o proprio non avere il blocco 'previous' richiesto);
+                        % viene ritornato l'atomo 'discarded_chain' che il tentativo di ricostruzione non è andato a buon
+                        % fine
                         {update_response, {discarded_chain, NewBlockID}}
                     end
         end
     end.
 
-% metodo da richiamare successivamente ad update
+% metodo di gestione dell'update:
+% nel caso in cui il blocco ricevuto sia corretto e non sia contenuto nella catena corrente, lo si diffonde ai propri
+% amici e si cerca di ricostruire la catena per questo attraverso la 'getResultingChainFromUpdate'
 updateHandling(NewBlockSender, Friends, NewBlock, CurrentChain) ->
     {NewBlockID, NewPreviousBlockID, TransactionList, Solution} = NewBlock,
     {chain, _, CurrentDictChain} = CurrentChain,
     case
         proof_of_work:check({NewPreviousBlockID, TransactionList}, Solution) and (dict:find(NewBlockID, CurrentDictChain) =:= error)
     of
-        false ->     
+        false ->
+            % blocco ricevuto da update scorretto o già presente all'interno della catena corrente
             {update_response, {discarded_chain, NewBlockID}};
         true ->
+            % diffusione del blocco ricevuto agli amici
             [F ! {update, NewBlockSender, NewBlock} || F <- Friends],
+            % tentativo di ricostruzione della catena per il blocco ricevuto
             getResultingChainFromUpdate(NewBlockSender, Friends, CurrentChain, NewBlock, NewBlockID, dict:new())
     end.
 
+% gestione in seguito ad arrivo dell'update e ritorno del risultato al padre
+handleUpdate(FatherPID, NewBlockSenderPID, Friends, NewBlock, CurrentChain) ->
+    FatherPID ! updateHandling(NewBlockSenderPID, Friends, NewBlock, CurrentChain).
+
+% lancia un sotto-attore per gestire un'update ricevuta
+launchUpdateActor(FatherPID, Sender, Friends, NewBlock, CurrentChain) ->
+    UpdateActorPID = spawn_link(fun() -> handleUpdate(FatherPID, Sender, Friends, NewBlock, CurrentChain) end),
+    put(UpdateActorPID, {launch_update, FatherPID, Sender, NewBlock}).
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%Print Function%
+%PRINT FUNCTIONS%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 xToString(X) ->
     lists:flatten(io_lib:format("~p", [X])).
 
@@ -697,9 +722,10 @@ printChainAndList(Chain, StartStringsList, ActorPID) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%Test%
+%TEST%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 test_nodes() ->
     _T = spawn(teacher_node, main, []),
 	sleep(1),
