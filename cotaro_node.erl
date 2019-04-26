@@ -19,11 +19,8 @@
 %       lunghezza corrente della catena del nodo
 % - activeMiner: 
 %       flag che indica se è attivo correntemente un attore che sta minando un blocco
-% - chainUpdateDuringMining: 
-%       flag che indica se la catena è stata modificata in seguito ad un update mentre un attore sta minando un blocco
-%       utilizzato per scartare il blocco minato quando lo si riceve
 
--record(state, {numberOfNotEnoughFriendRequest, chain, transactionPool, currentChainLength, activeMiner, chainUpdateDuringMining, updateInAnalysis}).
+-record(state, {numberOfNotEnoughFriendRequest, chain, transactionPool, currentChainLength, activeMiner, updateInAnalysis}).
 
 %utilizzata per lanciare un nuovo nodo
 launchNode() -> spawn(?MODULE, initializeNode, []).
@@ -39,7 +36,6 @@ initializeNode() ->
         transactionPool = [],
         currentChainLength = 0,
         activeMiner = false,
-        chainUpdateDuringMining = false,
         updateInAnalysis = []
     },
     process_flag(trap_exit, true),
@@ -176,28 +172,32 @@ loop(MyFriends, State) ->
             loop(MyFriends, NewState);
 
 		{mine_successful, NewBlock} ->
-            NewState = State#state{
-                activeMiner = checkMining(false, State#state.transactionPool, State#state.chain)
-            },
 			launchAcceptBlockActor(self(), State#state.chain, State#state.transactionPool, State#state.currentChainLength, NewBlock),
-			loop(MyFriends, NewState);
+			loop(MyFriends, State);
 
 		{mine_update, NewBlock, NewChain, _IDHead, NewTransactionPool, NewChainLength} ->
-            NewState = State#state{
-                chainUpdateDuringMining = false
-            },
-            case State#state.chainUpdateDuringMining of
-                true->
-                    loop(MyFriends, NewState);
-                false ->
-                    NewUpdatedState = NewState#state{
+            {chain, CurrentHead, _} = State#state.chain,
+            {_, NewPreviousID, _, _} = NewBlock,
+            % se testa della catena corrente è uguale all'id del blocco precedente di quello minato
+            % la catena non è cambiata e può essere aggiornata con il nuovo blocco;
+            % altrimenti è cambiata e il blocco deve essere stato scartato
+            case CurrentHead =:= NewPreviousID of
+                false->
+                    printChainAndList(NewChain, [self()]++["mindis"]),
+                    NewState = State#state{
+                        activeMiner = checkMining(false, State#state.transactionPool, State#state.chain)
+                    };
+                true ->
+                    printChainAndList(NewChain, [self()]++["minres"]),
+                    NewState = State#state{
                         chain = NewChain, 
                         transactionPool = NewTransactionPool, 
-                        currentChainLength = NewChainLength
+                        currentChainLength = NewChainLength,
+                        activeMiner = checkMining(false, NewTransactionPool, NewChain)
                     },
-                    [F ! {update, self(), NewBlock} || F <- MyFriends],
-                    loop(MyFriends, NewUpdatedState)
-            end;
+                    [F ! {update, self(), NewBlock} || F <- MyFriends]
+            end,
+            loop(MyFriends, NewState);
 			
 		{get_head, Sender, Nonce} ->
             launchGetHeadActor(Sender, Nonce, State#state.chain),
@@ -216,7 +216,7 @@ loop(MyFriends, State) ->
                     loop(MyFriends, State);
                 false -> 
                     NewState = State#state{updateInAnalysis = UpdateInAnalysis ++ [BlockID]},
-                    launchUpdateActor(self(), Sender, MyFriends, Block, State#state.chain, State#state.currentChainLength),
+                    launchUpdateActor(self(), Sender, MyFriends, Block, State#state.chain),
                     loop(MyFriends, NewState)
             end;
 
@@ -232,10 +232,9 @@ loop(MyFriends, State) ->
                             StateWithNewChain = NewState#state{
                                 chain = NewChain,
                                 transactionPool = CurrentTransactionPool -- TransactionToRemove,
-                                currentChainLength = NewChainLength,
-                                % setto flag per indicare che la catena è stata cambiata durante il mining di un blocco
-                                chainUpdateDuringMining = State#state.activeMiner
+                                currentChainLength = NewChainLength
                             },
+                            printChainAndList(NewChain, [self()]++["upres"]),
                             loop(MyFriends, StateWithNewChain);
                         false ->
                             loop(MyFriends, NewState)
@@ -278,7 +277,7 @@ loop(MyFriends, State) ->
 						{launch_acceptBlock, U_PID, U_NewBlock} ->
 							launchAcceptBlockActor(U_PID, State#state.chain, State#state.transactionPool, State#state.currentChainLength, U_NewBlock);
                         {launch_update, Father, Sender, NewBlock} ->
-                            launchUpdateActor(Father, Sender, MyFriends, NewBlock, State#state.chain, State#state.currentChainLength);
+                            launchUpdateActor(Father, Sender, MyFriends, NewBlock, State#state.chain);
                         _ ->
                             %se non so gestire la exit mi suicido
                             exit(Reason)
@@ -290,27 +289,27 @@ loop(MyFriends, State) ->
     end.
 
 %% modifico lo stato aggiornando la catena, la sua lunghezza e le transazioni ancora da minare; restituisco il nuovo stato
-acceptBlockActor(PID, Chain, TransactionPool, CurrentChainLength, NewBlock) ->
+acceptBlockActor(Father, Chain, TransactionPool, CurrentChainLength, NewBlock) ->
 	{IDHead, _IDPreviousBlock, Transactions, _Solution} = NewBlock,
     {chain, _, DictChain} = Chain,
     NewDictChain = dict:store(IDHead, NewBlock, DictChain),
 	NewChain = {chain, IDHead, NewDictChain},
 	NewTransactionPool = TransactionPool -- Transactions,
 	NewChainLength = CurrentChainLength + 1,
-	PID ! {mine_update, NewBlock, NewChain, IDHead, NewTransactionPool, NewChainLength}.
+	Father ! {mine_update, NewBlock, NewChain, IDHead, NewTransactionPool, NewChainLength}.
 
 launchAcceptBlockActor(PID, Chain, TransactionPool, CurrentChainLength, NewBlock) ->
     AcceptBlockActorPID = spawn_link(fun() -> acceptBlockActor(PID, Chain, TransactionPool, CurrentChainLength, NewBlock) end),
 	put(AcceptBlockActorPID, {launch_acceptBlock, PID, NewBlock}).
 
 % lancia un sotto-attore per gestire un'update ricevuta
-launchUpdateActor(FatherPID, Sender, Friends, NewBlock, CurrentChain, CurrentChainLength) ->
-    UpdateActorPID = spawn_link(fun() -> handleUpdate(FatherPID, Sender, Friends, NewBlock, CurrentChain, CurrentChainLength) end),
+launchUpdateActor(FatherPID, Sender, Friends, NewBlock, CurrentChain) ->
+    UpdateActorPID = spawn_link(fun() -> handleUpdate(FatherPID, Sender, Friends, NewBlock, CurrentChain) end),
     put(UpdateActorPID, {launch_update, FatherPID, Sender, NewBlock}).
 
 % gestione in seguito ad arrivo update delegata a sotto-attore
-handleUpdate(FatherPID, NewBlockSenderPID, Friends, NewBlock, CurrentChain, CurrentChainLength) ->
-    FatherPID ! updateHandling(NewBlockSenderPID, Friends, NewBlock, CurrentChain, CurrentChainLength).
+handleUpdate(FatherPID, NewBlockSenderPID, Friends, NewBlock, CurrentChain) ->
+    FatherPID ! updateHandling(NewBlockSenderPID, Friends, NewBlock, CurrentChain).
 
 %% se non abbiamo il blocco allora non inviamo il messaggio.
 %% in caso contrario, inviamo le informazioni del blocco richiesto
@@ -532,8 +531,8 @@ getDictChainLength(DictChain) ->
 % 'NewBlockID' e 'NewDictChain' mantengono durante le chiamate ricorsive l'ID del blocco originale ricevuto in
 % seguito all'update e il dizionario (che viene aggiornato durante le chiamate) con il quale si costruisce la
 % catena derivata da quest'ultimo
-getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, CurrentChainLength, Block, NewBlockID, NewDictChain) ->
-    {chain, CurrentHeadBlockID, CurrentDictChain} = CurrentChain,
+getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, Block, NewBlockID, NewDictChain) ->
+    {chain, _, CurrentDictChain} = CurrentChain,
     {BlockID, PreviousBlockID, _, _} = Block,
     NewUpdatedDictChain = dict:store(BlockID, Block, NewDictChain),
     case PreviousBlockID =:= none of
@@ -562,19 +561,6 @@ getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, CurrentChainLength
                     {update_response, {
                         new_chain,
                         NewChain,
-                        % per calcolare la lunghezza della nuova catena aggiungo la lunghezza della catena fino al nodo comune
-                        % con quella corrente alla lunghezza totale della catena corrente alla quale viene sottratto il numero
-                        % di blocchi che non sono considerati nella nuova
-                        %getDictChainLength(PartialNewDictDelta)
-                        %    +CurrentChainLength
-                        %    -getDictChainLength(
-                        %        getPartialDictChainFromBlockToBlock(
-                        %            CurrentDictChain, 
-                        %            CurrentHeadBlockID, 
-                        %            PreviousBlockID, 
-                        %            dict:new()
-                        %        )
-                        %   ),
                         getDictChainLength(NewDictChainMerged),
                         getChainTransactions(NewChain),
                         NewBlockID
@@ -594,7 +580,6 @@ getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, CurrentChainLength
                                 SenderPID,
                                 Friends,
                                 CurrentChain,
-                                CurrentChainLength,
                                 PreviousBlock,
                                 NewBlockID,
                                 NewUpdatedDictChain
@@ -608,7 +593,7 @@ getResultingChainFromUpdate(SenderPID, Friends, CurrentChain, CurrentChainLength
     end.
 
 % metodo da richiamare successivamente ad update
-updateHandling(NewBlockSender, Friends, NewBlock, CurrentChain, CurrentChainLength) ->
+updateHandling(NewBlockSender, Friends, NewBlock, CurrentChain) ->
     {NewBlockID, NewPreviousBlockID, TransactionList, Solution} = NewBlock,
     {chain, _, CurrentDictChain} = CurrentChain,
     case
@@ -618,7 +603,7 @@ updateHandling(NewBlockSender, Friends, NewBlock, CurrentChain, CurrentChainLeng
             {update_response, {discarded_chain, NewBlockID}};
         true ->
             [F ! {update, NewBlockSender, NewBlock} || F <- Friends],
-            getResultingChainFromUpdate(NewBlockSender, Friends, CurrentChain, CurrentChainLength, NewBlock, NewBlockID, dict:new())
+            getResultingChainFromUpdate(NewBlockSender, Friends, CurrentChain, NewBlock, NewBlockID, dict:new())
     end.
 
 mine(ID_previousBlock, TransactionList) ->
@@ -675,6 +660,11 @@ printDictChain(BlockID, DictChain, StringToPrint) ->
 printChain(Chain) ->
     {chain, Head, DictChain} = Chain,
     spawn(fun()-> printDictChain(Head, DictChain, "") end).
+
+% stampa la catena e il pid del nodo
+printChainAndList(Chain, StartStringsList) ->
+    {chain, Head, DictChain} = Chain,
+    spawn(fun()-> printDictChain(Head, DictChain, xToString(StartStringsList)) end).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 test_nodes() ->
