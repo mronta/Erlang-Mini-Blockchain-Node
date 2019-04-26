@@ -183,12 +183,12 @@ loop(MyFriends, State) ->
             % altrimenti è cambiata e il blocco deve essere stato scartato
             case CurrentHead =:= NewPreviousID of
                 false->
-                    printChainAndList(NewChain, [self()]++["mindis"]),
+                    %printChainAndList(NewChain, [self()]++["mindis"]),
                     NewState = State#state{
                         activeMiner = checkMining(false, State#state.transactionPool, State#state.chain)
                     };
                 true ->
-                    printChainAndList(NewChain, [self()]++["minres"]),
+                    %printChainAndList(NewChain, [self()]++["minres"]),
                     NewState = State#state{
                         chain = NewChain, 
                         transactionPool = NewTransactionPool, 
@@ -234,7 +234,7 @@ loop(MyFriends, State) ->
                                 transactionPool = CurrentTransactionPool -- TransactionToRemove,
                                 currentChainLength = NewChainLength
                             },
-                            printChainAndList(NewChain, [self()]++["upres"]),
+                            %printChainAndList(NewChain, [self()]++["upres"]),
                             loop(MyFriends, StateWithNewChain);
                         false ->
                             loop(MyFriends, NewState)
