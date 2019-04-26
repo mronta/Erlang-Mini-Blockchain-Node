@@ -44,10 +44,6 @@ initializeNode() ->
 
 loop(MyFriends, State) ->
     receive
-        {print_chain} ->
-            printChain(State#state.chain),
-            loop(MyFriends, State);
-
         {ping, Mittente, Nonce} ->
             %io:format("~p has received ping request, sending pong~n", [self()]),
             Mittente ! {pong, Nonce},
@@ -59,6 +55,15 @@ loop(MyFriends, State) ->
             io:format("For ~p the node ~p is dead, friend list updated = ~w~n",[self(), Node, MyFriendsUpdated]),
             askFriends(MyFriendsUpdated),
             loop(MyFriendsUpdated, State);
+
+        {timer_askFriendsToTeacher} ->
+            %controlliamo se nel frattempo è successo qualcosa che ci ha fatto raggiungere il numero necessario di amicizie,
+            %se non è così chiediamo al professore
+            case length(MyFriends) < ?NumberOfFriendsRequired of
+                true -> askFriendsToTeacher();
+                false -> nothingToDo
+            end,
+            loop(MyFriends, State);
 
         {friends, Nonce, Friends} ->
             %gestirà solo il messaggio di risposta del teacher alla get_friends (quello con esattamente il Nonce memorizzato nel dizionario di processo)
@@ -126,15 +131,6 @@ loop(MyFriends, State) ->
             end,
             loop(MyNewListOfFriends, NewState);
 
-        {timer_askFriendsToTeacher} ->
-            %controlliamo se nel frattempo è successo qualcosa che ci ha fatto raggiungere il numero necessario di amicizie,
-            %se non è così chiediamo al professore
-            case length(MyFriends) < ?NumberOfFriendsRequired of
-                true -> askFriendsToTeacher();
-                false -> nothingToDo
-            end,
-            loop(MyFriends, State);
-
         {get_friends, Sender, Nonce} ->
             %ci arriva una richiesta di trasmissione dei nostri amici, quindi inviamo la nostra lista al mittente
             Sender ! {friends, Nonce, MyFriends},
@@ -167,9 +163,13 @@ loop(MyFriends, State) ->
                     loop(MyFriends, NewState)
             end;
 
-        {active_miner} ->
-            NewState = State#state{activeMiner = true},
-            loop(MyFriends, NewState);
+        {get_head, Sender, Nonce} ->
+            launchGetHeadActor(Sender, Nonce, State#state.chain),
+			loop(MyFriends, State);
+
+		{get_previous, Sender, Nonce, IDPreviousBlock} ->
+            launchPreviousActor(Sender, Nonce, State#state.chain, IDPreviousBlock),
+			loop(MyFriends, State);
 
 		{mine_successful, NewBlock} ->
 			launchAcceptBlockActor(self(), State#state.chain, State#state.transactionPool, State#state.currentChainLength, NewBlock),
@@ -183,12 +183,12 @@ loop(MyFriends, State) ->
             % altrimenti è cambiata e il blocco deve essere stato scartato
             case CurrentHead =:= NewPreviousID of
                 false->
-                    %printChainAndList(NewChain, [self()]++["mindis"]),
+                    %printChainAndList(NewChain, [self()]++["mindis"], self()),
                     NewState = State#state{
                         activeMiner = checkMining(false, State#state.transactionPool, State#state.chain)
                     };
                 true ->
-                    %printChainAndList(NewChain, [self()]++["minres"]),
+                    %printChainAndList(NewChain, [self()]++["minres"], self()),
                     NewState = State#state{
                         chain = NewChain, 
                         transactionPool = NewTransactionPool, 
@@ -198,14 +198,6 @@ loop(MyFriends, State) ->
                     [F ! {update, self(), NewBlock} || F <- MyFriends]
             end,
             loop(MyFriends, NewState);
-			
-		{get_head, Sender, Nonce} ->
-            launchGetHeadActor(Sender, Nonce, State#state.chain),
-			loop(MyFriends, State);
-
-		{get_previous, Sender, Nonce, IDPreviousBlock} ->
-            launchPreviousActor(Sender, Nonce, State#state.chain, IDPreviousBlock),
-			loop(MyFriends, State);
 
         {update, Sender, Block} ->
             {BlockID, _, _, _} = Block,
@@ -234,7 +226,7 @@ loop(MyFriends, State) ->
                                 transactionPool = CurrentTransactionPool -- TransactionToRemove,
                                 currentChainLength = NewChainLength
                             },
-                            %printChainAndList(NewChain, [self()]++["upres"]),
+                            %printChainAndList(NewChain, [self()]++["upres"], self()),
                             loop(MyFriends, StateWithNewChain);
                         false ->
                             loop(MyFriends, NewState)
@@ -243,6 +235,10 @@ loop(MyFriends, State) ->
                     NewState = State#state{updateInAnalysis = UpdateInAnalysis -- [UpdateBlockID]}, 
                     loop(MyFriends, NewState)
             end;
+
+        {print_chain} ->
+            printChain(State#state.chain, self()),
+            loop(MyFriends, State);
 
         {'EXIT', ActorDeadPID, Reason} ->
             %abbiamo linkato tutti gli attori che abbiamo spawniamo, se questi terminano normalmente non facciamo nulla,
@@ -288,51 +284,60 @@ loop(MyFriends, State) ->
             loop(MyFriends, State)
     end.
 
-%% modifico lo stato aggiornando la catena, la sua lunghezza e le transazioni ancora da minare; restituisco il nuovo stato
-acceptBlockActor(Father, Chain, TransactionPool, CurrentChainLength, NewBlock) ->
-	{IDHead, _IDPreviousBlock, Transactions, _Solution} = NewBlock,
-    {chain, _, DictChain} = Chain,
-    NewDictChain = dict:store(IDHead, NewBlock, DictChain),
-	NewChain = {chain, IDHead, NewDictChain},
-	NewTransactionPool = TransactionPool -- Transactions,
-	NewChainLength = CurrentChainLength + 1,
-	Father ! {mine_update, NewBlock, NewChain, IDHead, NewTransactionPool, NewChainLength}.
-
-launchAcceptBlockActor(PID, Chain, TransactionPool, CurrentChainLength, NewBlock) ->
-    AcceptBlockActorPID = spawn_link(fun() -> acceptBlockActor(PID, Chain, TransactionPool, CurrentChainLength, NewBlock) end),
-	put(AcceptBlockActorPID, {launch_acceptBlock, PID, NewBlock}).
-
-% lancia un sotto-attore per gestire un'update ricevuta
-launchUpdateActor(FatherPID, Sender, Friends, NewBlock, CurrentChain) ->
-    UpdateActorPID = spawn_link(fun() -> handleUpdate(FatherPID, Sender, Friends, NewBlock, CurrentChain) end),
-    put(UpdateActorPID, {launch_update, FatherPID, Sender, NewBlock}).
-
-% gestione in seguito ad arrivo update delegata a sotto-attore
-handleUpdate(FatherPID, NewBlockSenderPID, Friends, NewBlock, CurrentChain) ->
-    FatherPID ! updateHandling(NewBlockSenderPID, Friends, NewBlock, CurrentChain).
-
-%% se non abbiamo il blocco allora non inviamo il messaggio.
-%% in caso contrario, inviamo le informazioni del blocco richiesto
-sendPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
-	SearchedBlock = getBlockFromChain(CurrentChain, IdBlock),
-	case SearchedBlock of
-		none -> nothingToDo;
-		_ -> Sender ! {previous, Nonce, SearchedBlock}
-	end.
-
-launchPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
-    PreviousActorPID = spawn_link(fun () -> sendPreviousActor(Sender, Nonce, CurrentChain, IdBlock) end),
-	put(PreviousActorPID, {send_previous_actor, Sender, Nonce, CurrentChain, IdBlock}).
-
-sendHeadActor(Sender, Nonce, CurrentChain) ->
-	Sender ! {head, Nonce, getHead(CurrentChain)}.
-
-launchGetHeadActor(Sender, Nonce, CurrentChain) ->
-    SendHeadPID = spawn_link(fun() -> sendHeadActor(Sender, Nonce, CurrentChain) end),
-	put(SendHeadPID, {send_head_actor, Sender, Nonce, CurrentChain}).
-
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%General Function%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 sleep(N) -> receive after N*1000 -> ok end.
 
+sendMessageWithDisturbance(DestinationPID, Message) ->
+    %ogni volta che inviate un messaggio, ci deve essere una probabilità su 10 di non inviarlo e una su 10 di inviarne due copie
+    case rand:uniform(10) of
+        0 ->
+            %non invio il messaggio
+            %io:format("Not send message (~w) to ~p for disturbance ~n", [Message, DestinationPID]),
+            nothingToDo;
+        1 ->
+            %invio il messaggio 2 volte
+            %io:format("Send message (~w) to ~p 2 times for disturbance ~n", [Message, DestinationPID]),
+            DestinationPID ! Message, DestinationPID ! Message;
+        _ ->
+            %altrimenti invio il messaggio correttamente una sola volta
+            DestinationPID ! Message
+    end.
+sendToAllFriend([], _) -> nothingToDo;
+sendToAllFriend(FriendList, Message) ->
+    lists:foreach(fun(FriendPID) -> sendMessageWithDisturbance(FriendPID, Message) end, FriendList).
+launchSenderToAllFriend(FriendList, Message) ->
+    MessageSenderPID = spawn_link(fun () -> sendToAllFriend(FriendList, Message) end),
+    %inseriamo le informazioni sull'attore message sender lanciato nel dizionario di processo così che
+    %se questo muore per qualche ragione, venga rilanciato
+    put(MessageSenderPID, {messageSender, FriendList, Message}).
+
+getHead([]) -> none;
+getHead(CurrentChain) ->
+	{chain, IdHead, CurrentDictChain} = CurrentChain,
+	case dict:find(IdHead, CurrentDictChain) of
+		{ok, Head} -> Head;
+		error -> nothingToDo %abbiamo già IdHead come testa, l'errore non si verificherà mai
+	end.
+
+getBlockFromDictChain(CurrentDictChain, BlockID) ->
+    case dict:find(BlockID, CurrentDictChain) of
+		{ok, Block} -> Block;
+		error -> none
+	end.
+
+getBlockFromChain(CurrentChain, BlockID) ->
+    {chain, _, CurrentDictChain} = CurrentChain,
+    getBlockFromDictChain(CurrentDictChain, BlockID).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%Topology Function%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 watch(Node, Main) ->
     sleep(10),
     Ref = make_ref(),
@@ -352,7 +357,7 @@ launchTimerToAskFriendToTeacher() ->
     TimerPID =  spawn_link(
         fun () ->
             %io:format("~p launch timer to ask friends to teacher~n", [Creator]),
-            sleep(10),
+            sleep(2),
             Creator ! {timer_askFriendsToTeacher}
         end),
     %inseriamo le informazioni sull'attore timer lanciato nel dizionario di processo così che
@@ -406,37 +411,11 @@ launchFriendsAdder(MyFriends, OtherFriends) ->
     %se questo muore per qualche ragione, venga rilanciato
     put(FriendsAdderPID, {friendsAdder, OtherFriends}).
 
-sendMessageWithDisturbance(DestinationPID, Message) ->
-    %ogni volta che inviate un messaggio, ci deve essere una probabilità su 10 di non inviarlo e una su 10 di inviarne due copie
-    case rand:uniform(10) of
-        0 ->
-            %non invio il messaggio
-            %io:format("Not send message (~w) to ~p for disturbance ~n", [Message, DestinationPID]),
-            nothingToDo;
-        1 ->
-            %invio il messaggio 2 volte
-            %io:format("Send message (~w) to ~p 2 times for disturbance ~n", [Message, DestinationPID]),
-            DestinationPID ! Message, DestinationPID ! Message;
-        _ ->
-            %altrimenti invio il messaggio correttamente una sola volta
-            DestinationPID ! Message
-    end.
-sendToAllFriend([], _) -> nothingToDo;
-sendToAllFriend(FriendList, Message) ->
-    lists:foreach(fun(FriendPID) -> sendMessageWithDisturbance(FriendPID, Message) end, FriendList).
-launchSenderToAllFriend(FriendList, Message) ->
-    MessageSenderPID = spawn_link(fun () -> sendToAllFriend(FriendList, Message) end),
-    %inseriamo le informazioni sull'attore message sender lanciato nel dizionario di processo così che
-    %se questo muore per qualche ragione, venga rilanciato
-    put(MessageSenderPID, {messageSender, FriendList, Message}).
-
-searchTransactionInTheChain(IdTransaction, Chain) ->
-    try
-        {chain, IdHeadBlock, _} = Chain,
-        searchTransactionInTheChainAux(IdTransaction, IdHeadBlock, Chain)
-    catch
-        found -> true
-    end.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%Push Function%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %la searchTransactionInTheChainAux solleva un'eccezione 'found' nel momento in cui trova in un blocco della catena la transazione cercata
 searchTransactionInTheChainAux(_, none, _) -> false ;
 searchTransactionInTheChainAux(IdTransaction, IdBlock, Chain) ->
@@ -446,6 +425,13 @@ searchTransactionInTheChainAux(IdTransaction, IdBlock, Chain) ->
     case searchTransactionInTheList(IdTransaction, CurrentTransactionList) of
         true -> throw(found);
         false -> searchTransactionInTheChainAux(IdTransaction, IDPreviousBlock, Chain)
+    end.
+searchTransactionInTheChain(IdTransaction, Chain) ->
+    try
+        {chain, IdHeadBlock, _} = Chain,
+        searchTransactionInTheChainAux(IdTransaction, IdHeadBlock, Chain)
+    catch
+        found -> true
     end.
 searchTransactionInTheList(IdTransaction, TransactionList) ->
     %predicato che ritorna true se la transazione in input è quella cercata (stesso ID), false altrimenti
@@ -474,23 +460,88 @@ launchTransactionIsInTheChain(Transaction, Chain) ->
     %se questo muore per qualche ragione, venga rilanciato
     put(TransactionControllerPID, {transcationIsInTheChainController, Transaction}).
 
-getHead([]) -> none;
-getHead(CurrentChain) ->
-	{chain, IdHead, CurrentDictChain} = CurrentChain,
-	case dict:find(IdHead, CurrentDictChain) of
-		{ok, Head} -> Head;
-		error -> nothingToDo %abbiamo già IdHead come testa, l'errore non si verificherà mai
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%Head/Previuos Function%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+sendHeadActor(Sender, Nonce, CurrentChain) ->
+	Sender ! {head, Nonce, getHead(CurrentChain)}.
+
+launchGetHeadActor(Sender, Nonce, CurrentChain) ->
+    SendHeadPID = spawn_link(fun() -> sendHeadActor(Sender, Nonce, CurrentChain) end),
+	put(SendHeadPID, {send_head_actor, Sender, Nonce, CurrentChain}).
+
+%% se non abbiamo il blocco allora non inviamo il messaggio.
+%% in caso contrario, inviamo le informazioni del blocco richiesto
+sendPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
+	SearchedBlock = getBlockFromChain(CurrentChain, IdBlock),
+	case SearchedBlock of
+		none -> nothingToDo;
+		_ -> Sender ! {previous, Nonce, SearchedBlock}
 	end.
 
-getBlockFromDictChain(CurrentDictChain, BlockID) ->
-    case dict:find(BlockID, CurrentDictChain) of
-		{ok, Block} -> Block;
-		error -> none
-	end.
+launchPreviousActor(Sender, Nonce, CurrentChain, IdBlock) ->
+    PreviousActorPID = spawn_link(fun () -> sendPreviousActor(Sender, Nonce, CurrentChain, IdBlock) end),
+	put(PreviousActorPID, {send_previous_actor, Sender, Nonce, CurrentChain, IdBlock}).
 
-getBlockFromChain(CurrentChain, BlockID) ->
-    {chain, _, CurrentDictChain} = CurrentChain,
-    getBlockFromDictChain(CurrentDictChain, BlockID).
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%Mine Function%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+mine(ID_previousBlock, TransactionList) ->
+    BlockID = make_ref(),
+    Solution = proof_of_work:solve({ID_previousBlock, TransactionList}),
+    {BlockID, ID_previousBlock, TransactionList, Solution}.
+
+%% registra se stesso con l'atomo miner_process, in modo da essere killato in caso di updateBlock sulle stesse transazioni su cui stiamo minando.
+%% Nel caso in cui il mining sia avvenuto con successo, manda a PID un messaggio contenente il nuovo stato (quindi la nuova catena).
+miner(IdPreviousBlock, PID, Transactions) ->
+    TransactionsToMine = lists:sublist(Transactions, 10),
+    NewBlock = mine(IdPreviousBlock, TransactionsToMine),
+    PID ! {mine_successful, NewBlock}.
+
+launchMinerActor(IdPreviousBlock, PID, Transactions) ->
+	MinerActorPID = spawn_link(fun () -> miner(IdPreviousBlock, PID, Transactions) end),
+    put(MinerActorPID, {miner_actor}).
+
+% nel caso in cui non sia attivo il mining e la pool di transazioni contenga almeno una transazione viene avviato il mining
+checkMining(ActiveMiner, Transactions, Chain) ->
+    case (not ActiveMiner) and (length(Transactions) > 0) of
+        true ->
+            {chain, IDHead, _} = Chain,
+            launchMinerActor(IDHead, self(), Transactions),
+            true;
+        false ->
+            ActiveMiner
+    end.
+
+%% modifico lo stato aggiornando la catena, la sua lunghezza e le transazioni ancora da minare; restituisco il nuovo stato
+acceptBlockActor(Father, Chain, TransactionPool, CurrentChainLength, NewBlock) ->
+	{IDHead, _IDPreviousBlock, Transactions, _Solution} = NewBlock,
+    {chain, _, DictChain} = Chain,
+    NewDictChain = dict:store(IDHead, NewBlock, DictChain),
+	NewChain = {chain, IDHead, NewDictChain},
+	NewTransactionPool = TransactionPool -- Transactions,
+	NewChainLength = CurrentChainLength + 1,
+	Father ! {mine_update, NewBlock, NewChain, IDHead, NewTransactionPool, NewChainLength}.
+launchAcceptBlockActor(PID, Chain, TransactionPool, CurrentChainLength, NewBlock) ->
+    AcceptBlockActorPID = spawn_link(fun() -> acceptBlockActor(PID, Chain, TransactionPool, CurrentChainLength, NewBlock) end),
+	put(AcceptBlockActorPID, {launch_acceptBlock, PID, NewBlock}).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%Update Function%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% gestione in seguito ad arrivo update delegata a sotto-attore
+handleUpdate(FatherPID, NewBlockSenderPID, Friends, NewBlock, CurrentChain) ->
+    FatherPID ! updateHandling(NewBlockSenderPID, Friends, NewBlock, CurrentChain).
+% lancia un sotto-attore per gestire un'update ricevuta
+launchUpdateActor(FatherPID, Sender, Friends, NewBlock, CurrentChain) ->
+    UpdateActorPID = spawn_link(fun() -> handleUpdate(FatherPID, Sender, Friends, NewBlock, CurrentChain) end),
+    put(UpdateActorPID, {launch_update, FatherPID, Sender, NewBlock}).
 
 % restituisce il dizionario (catena) che va da BlockID a EndingBlockID (non incluso)
 % chiamata con 'BlockID' avente l'id della testa della catena
@@ -606,80 +657,77 @@ updateHandling(NewBlockSender, Friends, NewBlock, CurrentChain) ->
             getResultingChainFromUpdate(NewBlockSender, Friends, CurrentChain, NewBlock, NewBlockID, dict:new())
     end.
 
-mine(ID_previousBlock, TransactionList) ->
-    BlockID = make_ref(),
-    Solution = proof_of_work:solve({ID_previousBlock, TransactionList}),
-    {BlockID, ID_previousBlock, TransactionList, Solution}.
-
-%% registra se stesso con l'atomo miner_process, in modo da essere killato in caso di updateBlock sulle stesse transazioni su cui stiamo minando.
-%% Nel caso in cui il mining sia avvenuto con successo, manda a PID un messaggio contenente il nuovo stato (quindi la nuova catena).
-miner(IdPreviousBlock, PID, Transactions) ->
-    TransactionsToMine = lists:sublist(Transactions, 10),
-    NewBlock = mine(IdPreviousBlock, TransactionsToMine),
-    PID ! {mine_successful, NewBlock}.
-
-launchMinerActor(IdPreviousBlock, PID, Transactions) ->
-	MinerActorPID = spawn_link(fun () -> miner(IdPreviousBlock, PID, Transactions) end),
-    put(MinerActorPID, {miner_actor}).
-
-% nel caso in cui non sia attivo il mining e la pool di transazioni contenga almeno una transazione viene avviato il mining
-checkMining(ActiveMiner, Transactions, Chain) ->
-    case (not ActiveMiner) and (length(Transactions) > 0) of
-        true ->
-            {chain, IDHead, _} = Chain,
-            launchMinerActor(IDHead, self(), Transactions),
-            true;
-        false ->
-            ActiveMiner
-    end.
-
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%Print Function%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 xToString(X) ->
     lists:flatten(io_lib:format("~p", [X])).
 
 % stampa il blocco
 newChainString(OldChainString, Block) ->
     BlockString = xToString(Block),
-    OldChainString ++ " -> " ++ BlockString.
+    OldChainString ++ "\n        -> " ++ BlockString.
 
 % scandisce la catena per la stampa, nella chiamata della funzione BlockID contiene l'ID del blocco di partenza
-printDictChain(BlockID, DictChain, StringToPrint) ->
+printDictChain(BlockID, DictChain, ActorPID, StringToPrint) ->
     case (BlockID =:= none) or (getDictChainLength(DictChain) =:= 0) of
         true ->
-            io:format("Chain: ~ts\n", [StringToPrint]);
+            io:format("\n\nChain of ~p: ~s\n", [ActorPID, StringToPrint]);
         false ->
             case dict:find(BlockID, DictChain) of
                 {ok, Block} -> 
                     {_, PreviousBlockID, _, _} = Block,
-                    printDictChain(PreviousBlockID, DictChain, newChainString(StringToPrint, Block));
+                    printDictChain(PreviousBlockID, DictChain, ActorPID, newChainString(StringToPrint, Block));
                 error ->
-                    io:format("Something wrong in chain: ~ts\n", [StringToPrint])
+                    io:format("\n\nSomething wrong in chain of actor ~p: ~s\n\n", [ActorPID, StringToPrint])
 	        end
     end.
 
 % stampa la catena
-printChain(Chain) ->
+printChain(Chain, ActorPID) ->
     {chain, Head, DictChain} = Chain,
-    spawn(fun()-> printDictChain(Head, DictChain, "") end).
+    spawn(fun()-> printDictChain(Head, DictChain, ActorPID, "") end).
 
 % stampa la catena e il pid del nodo
-printChainAndList(Chain, StartStringsList) ->
+printChainAndList(Chain, StartStringsList, ActorPID) ->
     {chain, Head, DictChain} = Chain,
-    spawn(fun()-> printDictChain(Head, DictChain, xToString(StartStringsList)) end).
+    spawn(fun()-> printDictChain(Head, DictChain, ActorPID, xToString(StartStringsList)) end).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%Test%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 test_nodes() ->
-    T = spawn(teacher_node, main, []),
+    _T = spawn(teacher_node, main, []),
 	sleep(1),
-    NodeList = launchNNode(10, []),
+    NodeList0 = launchNNode(10, []),
     sleep(2),
-    spawn(fun () -> sendTransactions(NodeList, 0) end),
-    sleep(60),
-    lists:nth(1, NodeList) ! {print_chain},
-    lists:nth(5, NodeList) ! {print_chain},
-    lists:nth(9, NodeList) ! {print_chain},
-    %[N ! {print_chain} || N <- NodeList],
-    %exit(lists:nth(rand:uniform(length(NodeList)), NodeList), manually_kill),
-    %exit(lists:nth(rand:uniform(length(NodeList)), NodeList), kill),
+    spawn(fun () -> sendTransactions(NodeList0, 0) end),
+    
+    sleep(rand:uniform(5)),
+
+    PIDNodeToKill1 = lists:nth(rand:uniform(length(NodeList0)), NodeList0),
+    exit(PIDNodeToKill1, manually_kill),
+    NodeList1 = NodeList0 -- [PIDNodeToKill1], 
+
+    sleep(rand:uniform(10)),    
+
+    PIDNodeToKill2 = lists:nth(rand:uniform(length(NodeList1)), NodeList1),
+    exit(PIDNodeToKill2, manually_kill),
+    NodeList2 = NodeList1 -- [PIDNodeToKill2],
+    
+    sleep(rand:uniform(20)),
+
+    PIDNodeToKill3 = lists:nth(rand:uniform(length(NodeList2)), NodeList2),
+    exit(PIDNodeToKill3, manually_kill),
+    NodeList = NodeList2 -- [PIDNodeToKill3],
+    
+    sleep(240),
+    [N ! {print_chain} || N <- NodeList],
+    sleep(15),
     test_launched.
 
 launchNNode(0, NodeList) ->
@@ -687,8 +735,9 @@ launchNNode(0, NodeList) ->
 launchNNode(N, NodeList) ->
     launchNNode(N-1, NodeList ++ [launchNode()]).
 
-sendTransactions(NodeList, 20) ->
+sendTransactions(_, 200) ->
     nothingToDo;
 sendTransactions(NodeList, I) ->
     lists:nth(rand:uniform(length(NodeList)), NodeList) ! {push, {make_ref(), list_to_atom("Transazione" ++ integer_to_list(I))}},
+    receive after rand:uniform(50)*10 -> ok end,
     sendTransactions(NodeList, I+1).
