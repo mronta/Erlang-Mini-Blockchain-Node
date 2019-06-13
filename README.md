@@ -1,8 +1,30 @@
 # Erlang Mini-Blockchain Node
 
-The updated node specification can be found (in italian) at: https://github.com/sacerdot/MiniErlangBlockchain
+The updated node specification is provided below (in italian). The page that collects all the nodes of the project can be found at: https://github.com/sacerdot/
 
-Version V0.5
+MiniErlangBlockchain: an exercise in Erlang
+===========================================
+
+Version V0.7
+============
+
+Per lanciare il vostro nodo:
+
+erl -name Docente    # lancia il nodo Erlang del docente
+teacher_node:main().
+
+erl -name Nome       # per lanciare il vostro nodo Erlang
+net_adm:ping('Docente@xxx.yyy.zzz').
+main:main().         # per lanciare il vostro nodo blockchain
+
+Per testarlo:
+
+erl -name Client
+teacher_client:main().
+
+- Il primo test (chiamato test2) prova a fare update con una chain lunga 2
+- Il secondo test prova ad aggiungere 15 transazioni
+
 ============
 
 Chiamiamo NODE un nodo della blockchain.
